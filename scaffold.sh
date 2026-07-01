@@ -90,9 +90,9 @@ MODULES=()
 MODULES+=("common/base.nix" "common/base-locale.nix")
 
 case "$GPU" in
-  AMD)    MODULES+=("features/amdgpu.nix") ;;
-  Intel)  MODULES+=("features/intel-gpu.nix") ;;
-  NVIDIA) MODULES+=("features/nvidia.nix") ;;
+  AMD)    MODULES+=("gpu/amdgpu.nix") ;;
+  Intel)  MODULES+=("gpu/intel-gpu.nix") ;;
+  NVIDIA) MODULES+=("gpu/nvidia.nix") ;;
 esac
 
 case "$DE" in
@@ -111,37 +111,37 @@ add_if "$DESKTOP_EXTRAS" "printing"         "desktop/printing.nix"
 add_if "$DESKTOP_EXTRAS" "nerdfonts"        "desktop/nerdfonts.nix"
 add_if "$DESKTOP_EXTRAS" "desktop-packages" "desktop/desktop-packages.nix"
 add_if "$DESKTOP_EXTRAS" "theming"          "desktop/theming.nix"
-add_if "$DESKTOP_EXTRAS" "kdeconnect"       "features/kdeconnect.nix"
+add_if "$DESKTOP_EXTRAS" "kdeconnect"       "desktop/kdeconnect.nix"
 
-add_if "$NETWORK_SEL" "networkmanager" "features/networkmanager.nix"
-add_if "$NETWORK_SEL" "tailscale"      "features/tailscale.nix"
-add_if "$NETWORK_SEL" "mullvad"        "features/mullvad.nix"
-add_if "$NETWORK_SEL" "ssh-hardened"   "features/ssh-hardened.nix"
-add_if "$NETWORK_SEL" "fail2ban"       "features/fail2ban.nix"
-add_if "$NETWORK_SEL" "mtr"            "features/mtr.nix"
+add_if "$NETWORK_SEL" "networkmanager" "network/networkmanager.nix"
+add_if "$NETWORK_SEL" "tailscale"      "network/tailscale.nix"
+add_if "$NETWORK_SEL" "mullvad"        "network/mullvad.nix"
+add_if "$NETWORK_SEL" "ssh-hardened"   "network/ssh-hardened.nix"
+add_if "$NETWORK_SEL" "fail2ban"       "network/fail2ban.nix"
+add_if "$NETWORK_SEL" "mtr"            "network/mtr.nix"
 
-add_if "$GAMING_SEL" "steam"    "features/steam.nix"
-add_if "$GAMING_SEL" "gamemode" "features/gamemode.nix"
+add_if "$GAMING_SEL" "steam"    "gaming/steam.nix"
+add_if "$GAMING_SEL" "gamemode" "gaming/gamemode.nix"
 
-add_if "$APPS_SEL" "flatpak"        "features/flatpak.nix"
-add_if "$APPS_SEL" "appimage"       "features/appimage.nix"
-add_if "$APPS_SEL" "signal"         "features/signal.nix"
-add_if "$APPS_SEL" "virtualisation" "features/virtualisation.nix"
-add_if "$APPS_SEL" "docker"         "features/docker.nix"
+add_if "$APPS_SEL" "flatpak"        "app/flatpak.nix"
+add_if "$APPS_SEL" "appimage"       "apps/appimage.nix"
+add_if "$APPS_SEL" "signal"         "apps/signal.nix"
+add_if "$APPS_SEL" "virtualisation" "apps/virtualisation.nix"
+add_if "$APPS_SEL" "docker"         "apps/docker.nix"
 
-add_if "$TUNING_SEL" "nix-gc"       "features/nix-gc.nix"
-add_if "$TUNING_SEL" "nix-tools"    "features/nix-tools.nix"
-add_if "$TUNING_SEL" "zram"         "features/zram.nix"
-add_if "$TUNING_SEL" "swapfile"     "features/swapfile.nix"
-add_if "$TUNING_SEL" "earlyoom"     "features/earlyoom.nix"
-add_if "$TUNING_SEL" "ssd"          "features/ssd.nix"
-add_if "$TUNING_SEL" "firewall"     "features/firewall.nix"
-add_if "$TUNING_SEL" "auto-upgrade" "features/auto-upgrade.nix"
-add_if "$TUNING_SEL" "tlp"          "features/tlp.nix"
-add_if "$TUNING_SEL" "shell-zsh"    "features/shell-zsh.nix"
-add_if "$TUNING_SEL" "gpgagent"     "features/gpgagent.nix"
-add_if "$TUNING_SEL" "gvfs"         "features/gvfs.nix"
-add_if "$TUNING_SEL" "syncthing"    "features/syncthing.nix"
+add_if "$TUNING_SEL" "nix-gc"       "tuning/nix-gc.nix"
+add_if "$TUNING_SEL" "nix-tools"    "tuning/nix-tools.nix"
+add_if "$TUNING_SEL" "zram"         "tuning/zram.nix"
+add_if "$TUNING_SEL" "swapfile"     "tuning/swapfile.nix"
+add_if "$TUNING_SEL" "earlyoom"     "tuning/earlyoom.nix"
+add_if "$TUNING_SEL" "ssd"          "tuning/ssd.nix"
+add_if "$TUNING_SEL" "firewall"     "network/firewall.nix"
+add_if "$TUNING_SEL" "auto-upgrade" "tuning/auto-upgrade.nix"
+add_if "$TUNING_SEL" "tlp"          "tuning/tlp.nix"
+add_if "$TUNING_SEL" "shell-zsh"    "tuning/shell-zsh.nix"
+add_if "$TUNING_SEL" "gpgagent"     "tuning/gpgagent.nix"
+add_if "$TUNING_SEL" "gvfs"         "tuning/gvfs.nix"
+add_if "$TUNING_SEL" "syncthing"    "tuning/syncthing.nix"
 
 if [ "$USE_AGENIX" = true ]; then
   MODULES+=("common/base-agenix.nix")

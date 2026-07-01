@@ -14,6 +14,7 @@
         in pkgs.writeShellApplication {
           name = "space-elevator";
           runtimeInputs = with pkgs; [ gum coreutils gnused git ];
+          excludeShellChecks = [ "SC2016" ];
           text = ''
             MODULE_SOURCE="${./modules}"
             ${builtins.readFile ./scaffold.sh}
