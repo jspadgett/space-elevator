@@ -7,6 +7,6 @@
     nerd-fonts.fira-code
     nerd-fonts.hack
     noto-fonts
-    noto-fonts-emoji
+    noto-fonts-color-emoji
   ];
 }
