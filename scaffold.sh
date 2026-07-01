@@ -177,6 +177,26 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
   exit 1
 fi
 
+# ── VM sizing ───────────────────────────────────────────────────────
+# Scale the VM test defaults to this machine: half the cores (2–4),
+# a quarter of RAM (2–8 GB). Written into vmVariant; user-editable.
+
+VM_CORES=$(( $(nproc) / 2 ))
+[ "$VM_CORES" -lt 2 ] && VM_CORES=2
+[ "$VM_CORES" -gt 4 ] && VM_CORES=4
+
+VM_MEM=2048
+if [ -r /proc/meminfo ]; then
+  while read -r key val _; do
+    if [ "$key" = "MemTotal:" ]; then
+      VM_MEM=$(( val / 1024 / 4 ))
+      break
+    fi
+  done < /proc/meminfo
+fi
+[ "$VM_MEM" -lt 2048 ] && VM_MEM=2048
+[ "$VM_MEM" -gt 8192 ] && VM_MEM=8192
+
 # ── Generate ────────────────────────────────────────────────────────
 
 header "Generating $OUTDIR"
@@ -312,9 +332,28 @@ fi
   echo '    curl'
   echo '  ];'
   echo ''
+  echo '  # VM test settings — applied ONLY by `nixos-rebuild build-vm`,'
+  echo '  # ignored entirely on a real installation. Sized from the machine'
+  echo '  # that generated this config; adjust freely.'
+  echo '  virtualisation.vmVariant = {'
+  echo "    virtualisation.memorySize = $VM_MEM;"
+  echo "    virtualisation.cores = $VM_CORES;"
+  echo "    users.users.$USERNAME.initialPassword = \"test\";"
+  echo '  };'
+  echo ''
   echo "  system.stateVersion = \"$STATE_VERSION\"; # do not change after install"
   echo '}'
 } > "$OUTDIR/hosts/$HOSTNAME/configuration.nix"
+
+# ── hosts/<name>/hardware-configuration.nix (placeholder) ───────────
+
+{
+  echo '# PLACEHOLDER — replace before installing on real hardware:'
+  echo "#   nixos-generate-config --show-hardware-config > hosts/$HOSTNAME/hardware-configuration.nix"
+  echo '# This stub is sufficient for VM testing (nixos-rebuild build-vm);'
+  echo '# a real install will refuse to build until it is replaced.'
+  echo '{ }'
+} > "$OUTDIR/hosts/$HOSTNAME/hardware-configuration.nix"
 
 # ── home-manager stub ───────────────────────────────────────────────
 
@@ -366,9 +405,20 @@ fi
   echo "- hosts/$HOSTNAME/ — per-machine config"
   echo '- modules/ — reusable feature modules (importing a file enables it)'
   echo ''
-  echo '## First boot checklist'
+  echo '## Test drive in a VM (no installation needed)'
   echo ''
-  echo '1. Generate hardware config on the target machine:'
+  echo '```'
+  echo 'git init && git add -A   # flakes only see tracked files'
+  echo "nixos-rebuild build-vm --flake .#$HOSTNAME"
+  echo "./result/bin/run-$HOSTNAME-vm"
+  echo '```'
+  echo ''
+  echo 'Log in with your username and password `test` (VM only — real installs'
+  echo "are unaffected). Delete $HOSTNAME.qcow2 for a factory-fresh boot."
+  echo ''
+  echo '## Installing on real hardware'
+  echo ''
+  echo '1. Replace the placeholder hardware config on the target machine:'
   echo '   ```'
   echo "   nixos-generate-config --show-hardware-config > hosts/$HOSTNAME/hardware-configuration.nix"
   echo '   ```'
@@ -403,10 +453,14 @@ gum style \
   --padding "1 2" --margin "1 0" \
   "Liftoff! Generated $OUTDIR with $COUNT modules." \
   "" \
-  "Next steps:" \
-  "  1. nixos-generate-config --show-hardware-config > $OUTDIR/hosts/$HOSTNAME/hardware-configuration.nix" \
-  "  2. cd $OUTDIR && git init && git add -A" \
-  "  3. sudo nixos-rebuild switch --flake .#$HOSTNAME"
+  "Test drive it in a VM right now:" \
+  "  cd $OUTDIR && git init && git add -A" \
+  "  nixos-rebuild build-vm --flake .#$HOSTNAME" \
+  "  ./result/bin/run-$HOSTNAME-vm    (login: $USERNAME / test)" \
+  "" \
+  "Install on real hardware:" \
+  "  1. nixos-generate-config --show-hardware-config > hosts/$HOSTNAME/hardware-configuration.nix" \
+  "  2. sudo nixos-rebuild switch --flake .#$HOSTNAME"
 
 if gum confirm "Initialize a git repository in $OUTDIR now?"; then
   git -C "$OUTDIR" init -q
