@@ -1,17 +1,22 @@
 # modules/common/base-locale.nix
-# US English locale defaults. Swap the values for your region.
+# Locale and keyboard layout, filled in by the wizard.
 { ... }:
 {
-  i18n.defaultLocale = "en_US.UTF-8";
+  i18n.defaultLocale = "@LOCALE@";
   i18n.extraLocaleSettings = {
-    LC_ADDRESS = "en_US.UTF-8";
-    LC_IDENTIFICATION = "en_US.UTF-8";
-    LC_MEASUREMENT = "en_US.UTF-8";
-    LC_MONETARY = "en_US.UTF-8";
-    LC_NAME = "en_US.UTF-8";
-    LC_NUMERIC = "en_US.UTF-8";
-    LC_PAPER = "en_US.UTF-8";
-    LC_TELEPHONE = "en_US.UTF-8";
-    LC_TIME = "en_US.UTF-8";
+    LC_ADDRESS = "@LOCALE@";
+    LC_IDENTIFICATION = "@LOCALE@";
+    LC_MEASUREMENT = "@LOCALE@";
+    LC_MONETARY = "@LOCALE@";
+    LC_NAME = "@LOCALE@";
+    LC_NUMERIC = "@LOCALE@";
+    LC_PAPER = "@LOCALE@";
+    LC_TELEPHONE = "@LOCALE@";
+    LC_TIME = "@LOCALE@";
   };
+
+  # Keyboard layout for graphical sessions; the console follows it too,
+  # so the login screen and TTYs match what's printed on the keys.
+  services.xserver.xkb.layout = "@KB_LAYOUT@";
+  console.useXkbConfig = true;
 }

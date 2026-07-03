@@ -1,12 +1,41 @@
 #!/usr/bin/env bash
-# space-elevator — interactive NixOS flake generator
-# MODULE_SOURCE is injected by flake.nix and points to the vendored modules/ dir.
+# space-elevator — opinionated NixOS desktop generator
+# Answer a few questions, get a complete desktop flake with distro-grade defaults.
+#
+# Non-interactive mode (for CI / scripting): set SE_NONINTERACTIVE=1 and any of
+#   SE_HOSTNAME SE_USERNAME SE_PASSWORD SE_TIMEZONE SE_LOCALE SE_KEYMAP
+#   SE_OUTDIR SE_GPU (AMD|Intel|NVIDIA|None) SE_DE ("KDE Plasma"|GNOME|COSMIC|Hyprland)
+#   SE_FLAVORS (comma list of: gaming,development,theming,kdeconnect)
+#
+# MODULE_SOURCE is injected by flake.nix; the fallback covers standalone dev runs.
+set -euo pipefail
+MODULE_SOURCE="${MODULE_SOURCE:-$(cd "$(dirname "$0")" && pwd)/modules}"
+NONINT="${SE_NONINTERACTIVE:-0}"
+
+# In non-interactive environments without gum (CI), shim `gum style` to echo.
+# All style flags we use take a value, so drop flag+value pairs and print.
+if [ "$NONINT" = 1 ] && ! command -v gum >/dev/null 2>&1; then
+  gum() {
+    if [ "$1" = "style" ]; then
+      shift
+      while [ $# -gt 0 ] && [[ "$1" == --* ]]; do shift 2; done
+      printf '%s\n' "$@"
+    else
+      echo "gum required for interactive prompts" >&2
+      return 1
+    fi
+  }
+fi
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
 header() {
   gum style --border rounded --border-foreground 6 --padding "0 2" --margin "1 0" "$1"
 }
+
+note() { gum style --foreground 3 "$1"; }
+
+die() { gum style --foreground 1 "$1"; exit 1; }
 
 # gum choose exits nonzero on ESC/empty; treat as "nothing selected"
 pick_many() {
@@ -17,86 +46,246 @@ pick_one() {
   gum choose --header "$1" "${@:2}"
 }
 
-echo ""
-gum style \
-  --border double --border-foreground 6 \
-  --padding "1 3" --margin "0 2" --align center \
-  "🚀 SPACE ELEVATOR" \
-  "" \
-  "From bare metal to orbit: answer a few" \
-  "questions, get a complete NixOS flake."
+# Exact-line match against gum's newline-separated selections
+has() { grep -qxF "$2" <<<"$1"; }
+
+# Confirm with a non-interactive default: prompt_confirm "question" y|n
+prompt_confirm() {
+  if [ "$NONINT" = 1 ]; then [ "${2:-y}" = "y" ]; else gum confirm "$1"; fi
+}
+
+GENERATING=false
+on_err() {
+  echo
+  if [ "$GENERATING" = true ]; then
+    gum style --foreground 1 "Generation failed — $OUTDIR may be incomplete."
+  else
+    note "Aborted — nothing was written."
+  fi
+}
+trap on_err ERR
+
+if [ "$NONINT" != 1 ]; then
+  echo ""
+  gum style \
+    --border double --border-foreground 6 \
+    --padding "1 3" --margin "0 2" --align center \
+    "🚀 SPACE ELEVATOR" \
+    "" \
+    "Your NixOS desktop, built to order:" \
+    "a few quick questions, distro-grade defaults."
+fi
 
 # ── Basics ──────────────────────────────────────────────────────────
 
-header "Basics"
+[ "$NONINT" != 1 ] && header "Basics"
 
-HOSTNAME=$(gum input --header "Hostname for this machine:" --placeholder "e.g. nixbox")
-[ -z "$HOSTNAME" ] && { echo "Hostname is required."; exit 1; }
+HOST_DEFAULT="${SE_HOSTNAME:-$(cat /etc/hostname 2>/dev/null || echo "${HOSTNAME:-nixbox}")}"
+while :; do
+  if [ "$NONINT" = 1 ]; then
+    HOSTNAME="$HOST_DEFAULT"
+  else
+    HOSTNAME=$(gum input --header "Hostname for this machine:" --value "$HOST_DEFAULT")
+  fi
+  [[ "$HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] && break
+  [ "$NONINT" = 1 ] && die "Invalid hostname: $HOSTNAME"
+  note "Hostname must be letters, digits, and hyphens (no leading/trailing hyphen)."
+done
 
-USERNAME=$(gum input --header "Primary username:" --placeholder "e.g. admin, user")
-[ -z "$USERNAME" ] && { echo "Username is required."; exit 1; }
+while :; do
+  if [ "$NONINT" = 1 ]; then
+    USERNAME="${SE_USERNAME:-user}"
+  else
+    USERNAME=$(gum input --header "Primary username:" --placeholder "e.g. alice")
+  fi
+  [[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] && break
+  [ "$NONINT" = 1 ] && die "Invalid username: $USERNAME"
+  note "Username must start with a lowercase letter, then lowercase letters, digits, - or _."
+done
 
-TIMEZONE=$(gum input --header "Timezone:" --placeholder "e.g. America/New_York" --value "America/New_York")
+# Login password: hashed into the config so the first boot isn't locked out.
+PASSWORD_HASH=""
+PW="${SE_PASSWORD:-}"
+if [ "$NONINT" != 1 ]; then
+  while :; do
+    PW=$(gum input --password --header "Login password for $USERNAME (leave blank to use 'changeme'):")
+    [ -z "$PW" ] && break
+    PW2=$(gum input --password --header "Confirm password:")
+    [ "$PW" = "$PW2" ] && break
+    note "Passwords didn't match — try again, or leave blank to skip."
+  done
+fi
+if [ -n "$PW" ]; then
+  if command -v mkpasswd >/dev/null 2>&1; then
+    PASSWORD_HASH=$(mkpasswd -m sha-512 -s <<<"$PW")
+  else
+    note "mkpasswd not available — falling back to initial password 'changeme'."
+  fi
+fi
+unset PW
+if [ -n "$PASSWORD_HASH" ]; then
+  PASSWORD_NIX="hashedPassword = \"$PASSWORD_HASH\";"
+  PW_HINT="the password you chose"
+else
+  PASSWORD_NIX="initialPassword = \"changeme\"; # CHANGE after first login: run 'passwd'"
+  PW_HINT="changeme"
+fi
 
-STATE_VERSION=$(gum input --header "NixOS state version:" --value "25.11")
+# Timezone / locale / keyboard: default to whatever this machine uses
+TZ_DEFAULT="${SE_TIMEZONE:-America/New_York}"
+if [ -z "${SE_TIMEZONE:-}" ] && [ -e /etc/localtime ]; then
+  TZ_PATH=$(readlink -f /etc/localtime || true)
+  case "$TZ_PATH" in
+    *zoneinfo/*) TZ_DEFAULT="${TZ_PATH#*zoneinfo/}" ;;
+  esac
+fi
 
-OUTDIR=$(gum input --header "Output directory:" --value "./nixos-config")
+LOC_DEFAULT="${SE_LOCALE:-${LANG:-en_US.UTF-8}}"
+LOC_DEFAULT="${LOC_DEFAULT%%:*}"
+case "$LOC_DEFAULT" in C | C.* | POSIX) LOC_DEFAULT="en_US.UTF-8" ;; esac
 
-# ── Hardware ────────────────────────────────────────────────────────
+KB_DEFAULT="${SE_KEYMAP:-}"
+if [ -z "$KB_DEFAULT" ] && command -v localectl >/dev/null 2>&1; then
+  KB_DEFAULT=$(localectl status 2>/dev/null | sed -n 's/.*X11 Layout: //p' | head -1 || true)
+fi
+KB_DEFAULT="${KB_DEFAULT:-us}"
 
-header "Hardware"
+if [ "$NONINT" = 1 ]; then
+  TIMEZONE="$TZ_DEFAULT"
+  LOCALE="$LOC_DEFAULT"
+  KB_LAYOUT="$KB_DEFAULT"
+else
+  TIMEZONE=$(gum input --header "Timezone:" --value "$TZ_DEFAULT")
+  LOCALE=$(gum input --header "Locale:" --value "$LOC_DEFAULT")
+  KB_LAYOUT=$(gum input --header "Keyboard layout (XKB code, e.g. us, de, fr):" --value "$KB_DEFAULT")
+fi
+[[ "$LOCALE" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "Invalid locale: $LOCALE"
+[[ "$KB_LAYOUT" =~ ^[a-z]+(,[a-z]+)*$ ]] || die "Invalid keyboard layout: $KB_LAYOUT"
 
-GPU=$(pick_one "GPU vendor:" "AMD" "Intel" "NVIDIA" "None / VM")
+if [ "$NONINT" = 1 ]; then
+  OUTDIR="${SE_OUTDIR:-./nixos-config}"
+else
+  OUTDIR=$(gum input --header "Output directory:" --value "./nixos-config")
+fi
+if [ -d "$OUTDIR" ] && [ -n "$(ls -A "$OUTDIR" 2>/dev/null)" ]; then
+  prompt_confirm "$OUTDIR exists and is not empty. Overwrite generated files?" y || {
+    note "Aborted — nothing was written."
+    exit 0
+  }
+fi
+
+STATE_VERSION="26.05" # matches the pinned nixpkgs release below
+
+# ── Hardware (auto-detected, confirmed) ─────────────────────────────
+
+[ "$NONINT" != 1 ] && header "Hardware"
+
+GPU_DETECTED=""
+if command -v lspci >/dev/null 2>&1; then
+  # VGA (0300), 3D (0302), and display (0380) controllers
+  PCI=$( { lspci -mm -d ::0300; lspci -mm -d ::0302; lspci -mm -d ::0380; } 2>/dev/null || true)
+  # Check discrete vendors before Intel so hybrid laptops surface the dGPU
+  case "$PCI" in
+    *NVIDIA*)                           GPU_DETECTED="NVIDIA" ;;
+    *"Advanced Micro"* | *AMD* | *ATI*) GPU_DETECTED="AMD" ;;
+    *Intel*)                            GPU_DETECTED="Intel" ;;
+  esac
+fi
+
+GPU=""
+if [ "$NONINT" = 1 ]; then
+  GPU="${SE_GPU:-${GPU_DETECTED:-None / VM}}"
+else
+  if [ -n "$GPU_DETECTED" ]; then
+    gum confirm "Detected GPU: $GPU_DETECTED — use this?" && GPU="$GPU_DETECTED"
+  fi
+  if [ -z "$GPU" ]; then
+    GPU=$(pick_one "GPU vendor:" "AMD" "Intel" "NVIDIA" "None / VM")
+  fi
+fi
+
+USE_TLP=false
+if compgen -G "/sys/class/power_supply/BAT*" >/dev/null; then
+  if [ "$NONINT" = 1 ]; then
+    USE_TLP=true
+  else
+    gum confirm "Battery detected (laptop) — include TLP power management?" && USE_TLP=true
+  fi
+fi
+
+# Installer ISO detection: nixos-install available and a target mounted at /mnt
+INSTALL_MODE=false
+CAPTURE_HW=false
+if [ "$NONINT" != 1 ] && command -v nixos-install >/dev/null 2>&1 \
+    && grep -q ' /mnt ' /proc/mounts; then
+  if gum confirm "Installer environment detected (target mounted at /mnt). Set this config up for 'nixos-install'?"; then
+    INSTALL_MODE=true
+    CAPTURE_HW=true
+  fi
+fi
+
+# On an installed NixOS system we can capture the real hardware config
+if [ "$INSTALL_MODE" = false ] && [ "$NONINT" != 1 ] \
+    && command -v nixos-generate-config >/dev/null 2>&1; then
+  if gum confirm "Capture THIS machine's hardware config (disks, filesystems)? Choose No if this config is for a different machine."; then
+    CAPTURE_HW=true
+  fi
+fi
 
 # ── Desktop ─────────────────────────────────────────────────────────
 
-header "Desktop"
+[ "$NONINT" != 1 ] && header "Desktop"
 
-DE=$(pick_one "Desktop environment:" "KDE Plasma" "Hyprland" "COSMIC" "GNOME" "Headless (no desktop)")
-
-DESKTOP_EXTRAS=""
-if [ "$DE" != "Headless (no desktop)" ]; then
-  DESKTOP_EXTRAS=$(pick_many "Desktop extras (space to select, enter to confirm):" \
-    "bluetooth" "printing" "nerdfonts" "desktop-packages" "theming (Catppuccin)" "kdeconnect")
+if [ "$NONINT" = 1 ]; then
+  DE="${SE_DE:-KDE Plasma}"
+else
+  DE=$(pick_one "Desktop environment:" \
+    "KDE Plasma — familiar Windows-like layout, highly configurable" \
+    "GNOME — polished and streamlined, macOS-like workflow" \
+    "COSMIC — modern desktop from System76, tiling built in" \
+    "Hyprland — keyboard-driven tiling compositor for tinkerers")
 fi
 
-# ── Features ────────────────────────────────────────────────────────
+# ── Flavors ─────────────────────────────────────────────────────────
 
-header "Features"
-
-NETWORK_SEL=$(pick_many "Networking:" \
-  "networkmanager" "tailscale" "mullvad" "ssh-hardened" "fail2ban" "mtr")
-
-GAMING_SEL=""
-if [ "$DE" != "Headless (no desktop)" ]; then
-  GAMING_SEL=$(pick_many "Gaming:" "steam" "gamemode")
+FLAVOR_TOKENS=""
+if [ "$NONINT" = 1 ]; then
+  FLAVOR_TOKENS="${SE_FLAVORS//,/ }"
+else
+  header "Flavors"
+  SELECTED=$(pick_many "Optional flavors (space to select, enter to confirm):" \
+    "gaming (Steam + gamemode)" \
+    "development (Docker + libvirt)" \
+    "theming (Catppuccin)" \
+    "kdeconnect (phone integration)")
+  has "$SELECTED" "gaming (Steam + gamemode)"      && FLAVOR_TOKENS="$FLAVOR_TOKENS gaming"
+  has "$SELECTED" "development (Docker + libvirt)" && FLAVOR_TOKENS="$FLAVOR_TOKENS development"
+  has "$SELECTED" "theming (Catppuccin)"           && FLAVOR_TOKENS="$FLAVOR_TOKENS theming"
+  has "$SELECTED" "kdeconnect (phone integration)" && FLAVOR_TOKENS="$FLAVOR_TOKENS kdeconnect"
 fi
+want() { case " $FLAVOR_TOKENS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
-APPS_SEL=$(pick_many "Apps & runtimes:" \
-  "flatpak" "appimage" "signal" "virtualisation (libvirt)" "docker")
+# ── Build module list ───────────────────────────────────────────────
+# The baseline is unconditional: this is the "distro" layer every
+# generated desktop gets. Everything below it is driven by answers.
 
-TUNING_SEL=$(pick_many "System tuning & maintenance:" \
-  "nix-gc" "nix-tools" "zram" "swapfile" "earlyoom" "ssd" "firewall" \
-  "auto-upgrade" "tlp (laptop)" "shell-zsh" "gpgagent" "gvfs" "syncthing")
-
-# ── Options ─────────────────────────────────────────────────────────
-
-header "Options"
-
-USE_HM=false
-gum confirm "Include home-manager (per-user dotfile management)?" && USE_HM=true
-
-USE_AGENIX=false
-gum confirm "Include agenix (encrypted secrets)?" && USE_AGENIX=true
-
-USE_CATPPUCCIN=false
-case "$DESKTOP_EXTRAS" in *theming*) USE_CATPPUCCIN=true ;; esac
-
-# ── Build selection list ────────────────────────────────────────────
-# Each entry: "relative/module/path.nix"
-
-MODULES=()
-MODULES+=("common/base.nix" "common/base-locale.nix")
+MODULES=(
+  common/base.nix
+  common/base-locale.nix
+  desktop/audio.nix
+  desktop/bluetooth.nix
+  desktop/printing.nix
+  desktop/nerdfonts.nix
+  desktop/desktop-packages.nix
+  network/networkmanager.nix
+  network/firewall.nix
+  apps/flatpak.nix
+  tuning/nix-gc.nix
+  tuning/nix-tools.nix
+  tuning/zram.nix
+  tuning/gvfs.nix
+  tuning/earlyoom.nix
+)
 
 case "$GPU" in
   AMD)    MODULES+=("gpu/amdgpu.nix") ;;
@@ -105,65 +294,23 @@ case "$GPU" in
 esac
 
 case "$DE" in
-  "KDE Plasma") MODULES+=("desktop/plasma.nix" "desktop/audio.nix") ;;
-  "Hyprland")   MODULES+=("desktop/hyprland.nix" "desktop/audio.nix") ;;
-  "COSMIC")     MODULES+=("desktop/cosmic.nix" "desktop/audio.nix") ;;
-  "GNOME")      MODULES+=("desktop/gnome.nix" "desktop/audio.nix") ;;
+  "KDE Plasma"*) MODULES+=("desktop/plasma.nix") ;;
+  "GNOME"*)      MODULES+=("desktop/gnome.nix") ;;
+  "COSMIC"*)     MODULES+=("desktop/cosmic.nix") ;;
+  "Hyprland"*)   MODULES+=("desktop/hyprland.nix") ;;
+  *)             die "Unknown desktop environment: $DE" ;;
 esac
 
-add_if() { # add_if <selection-var> <needle> <module-path>
-  case "$1" in *"$2"*) MODULES+=("$3") ;; esac
-}
+[ "$USE_TLP" = true ] && MODULES+=("tuning/tlp.nix")
 
-add_if "$DESKTOP_EXTRAS" "bluetooth"        "desktop/bluetooth.nix"
-add_if "$DESKTOP_EXTRAS" "printing"         "desktop/printing.nix"
-add_if "$DESKTOP_EXTRAS" "nerdfonts"        "desktop/nerdfonts.nix"
-add_if "$DESKTOP_EXTRAS" "desktop-packages" "desktop/desktop-packages.nix"
-add_if "$DESKTOP_EXTRAS" "theming"          "desktop/theming.nix"
-add_if "$DESKTOP_EXTRAS" "kdeconnect"       "desktop/kdeconnect.nix"
-
-add_if "$NETWORK_SEL" "networkmanager" "network/networkmanager.nix"
-add_if "$NETWORK_SEL" "tailscale"      "network/tailscale.nix"
-add_if "$NETWORK_SEL" "mullvad"        "network/mullvad.nix"
-add_if "$NETWORK_SEL" "ssh-hardened"   "network/ssh-hardened.nix"
-add_if "$NETWORK_SEL" "fail2ban"       "network/fail2ban.nix"
-add_if "$NETWORK_SEL" "mtr"            "network/mtr.nix"
-
-add_if "$GAMING_SEL" "steam"    "gaming/steam.nix"
-add_if "$GAMING_SEL" "gamemode" "gaming/gamemode.nix"
-
-add_if "$APPS_SEL" "flatpak"        "apps/flatpak.nix"
-add_if "$APPS_SEL" "appimage"       "apps/appimage.nix"
-add_if "$APPS_SEL" "signal"         "apps/signal.nix"
-add_if "$APPS_SEL" "virtualisation" "apps/virtualisation.nix"
-add_if "$APPS_SEL" "docker"         "apps/docker.nix"
-
-add_if "$TUNING_SEL" "nix-gc"       "tuning/nix-gc.nix"
-add_if "$TUNING_SEL" "nix-tools"    "tuning/nix-tools.nix"
-add_if "$TUNING_SEL" "zram"         "tuning/zram.nix"
-add_if "$TUNING_SEL" "swapfile"     "tuning/swapfile.nix"
-add_if "$TUNING_SEL" "earlyoom"     "tuning/earlyoom.nix"
-add_if "$TUNING_SEL" "ssd"          "tuning/ssd.nix"
-add_if "$TUNING_SEL" "firewall"     "network/firewall.nix"
-add_if "$TUNING_SEL" "auto-upgrade" "tuning/auto-upgrade.nix"
-add_if "$TUNING_SEL" "tlp"          "tuning/tlp.nix"
-add_if "$TUNING_SEL" "shell-zsh"    "tuning/shell-zsh.nix"
-add_if "$TUNING_SEL" "gpgagent"     "tuning/gpgagent.nix"
-add_if "$TUNING_SEL" "gvfs"         "tuning/gvfs.nix"
-add_if "$TUNING_SEL" "syncthing"    "tuning/syncthing.nix"
-
-if [ "$USE_AGENIX" = true ]; then
-  MODULES+=("common/base-agenix.nix")
+USE_CATPPUCCIN=false
+want gaming      && MODULES+=("gaming/steam.nix" "gaming/gamemode.nix")
+want development && MODULES+=("apps/docker.nix" "apps/virtualisation.nix")
+want kdeconnect  && MODULES+=("desktop/kdeconnect.nix")
+if want theming; then
+  MODULES+=("desktop/theming.nix")
+  USE_CATPPUCCIN=true
 fi
-
-# Sanity warnings (non-fatal)
-case "$NETWORK_SEL" in
-  *fail2ban*)
-    case "$NETWORK_SEL" in
-      *ssh-hardened*) : ;;
-      *) gum style --foreground 3 "Note: fail2ban selected without ssh-hardened; it mainly guards SSH." ;;
-    esac ;;
-esac
 
 # ── Pre-flight: verify all selected modules exist ───────────────────
 
@@ -177,10 +324,15 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
   exit 1
 fi
 
-# ── VM sizing ───────────────────────────────────────────────────────
+# ── Host facts ──────────────────────────────────────────────────────
+
+case "$(uname -m)" in
+  aarch64) SYSTEM="aarch64-linux" ;;
+  *)       SYSTEM="x86_64-linux" ;;
+esac
+
 # Scale the VM test defaults to this machine: half the cores (2–4),
 # a quarter of RAM (2–8 GB). Written into vmVariant; user-editable.
-
 VM_CORES=$(( $(nproc) / 2 ))
 [ "$VM_CORES" -lt 2 ] && VM_CORES=2
 [ "$VM_CORES" -gt 4 ] && VM_CORES=4
@@ -200,6 +352,7 @@ fi
 # ── Generate ────────────────────────────────────────────────────────
 
 header "Generating $OUTDIR"
+GENERATING=true
 
 mkdir -p "$OUTDIR/flake" "$OUTDIR/hosts/$HOSTNAME" "$OUTDIR/modules"
 
@@ -214,238 +367,263 @@ done
 # Remove any category directories that ended up empty
 find "$OUTDIR/modules" -type d -empty -delete
 
-# Substitute username placeholders (syncthing)
-if [ -f "$OUTDIR/modules/tuning/syncthing.nix" ]; then
-  sed -i "s/@USERNAME@/$USERNAME/g" "$OUTDIR/modules/tuning/syncthing.nix"
-fi
+# Substitute placeholders in any module that carries them
+{ grep -rlE '@(USERNAME|LOCALE|KB_LAYOUT)@' "$OUTDIR/modules" 2>/dev/null || true; } | while read -r f; do
+  sed -i \
+    -e "s|@USERNAME@|$USERNAME|g" \
+    -e "s|@LOCALE@|$LOCALE|g" \
+    -e "s|@KB_LAYOUT@|$KB_LAYOUT|g" \
+    "$f"
+done
 
 # ── flake.nix ───────────────────────────────────────────────────────
 
 {
-  echo '{'
-  echo '  description = "NixOS configuration generated by space-elevator";'
-  echo ''
-  echo '  inputs = {'
-  echo '    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";'
-  echo '    flake-parts.url = "github:hercules-ci/flake-parts";'
-  if [ "$USE_HM" = true ]; then
-    echo ''
-    echo '    home-manager = {'
-    echo '      url = "github:nix-community/home-manager/release-25.11";'
-    echo '      inputs.nixpkgs.follows = "nixpkgs";'
-    echo '    };'
-  fi
-  if [ "$USE_AGENIX" = true ]; then
-    echo ''
-    echo '    agenix = {'
-    echo '      url = "github:ryantm/agenix";'
-    echo '      inputs.nixpkgs.follows = "nixpkgs";'
-    echo '    };'
-  fi
+  cat <<EOF
+{
+  description = "NixOS desktop configuration generated by space-elevator";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    flake-parts.url = "github:hercules-ci/flake-parts";
+EOF
   if [ "$USE_CATPPUCCIN" = true ]; then
-    echo ''
-    echo '    catppuccin.url = "github:catppuccin/nix/release-25.11";'
+    cat <<EOF
+
+    catppuccin.url = "github:catppuccin/nix/release-26.05";
+EOF
   fi
-  echo '  };'
-  echo ''
-  echo '  outputs = inputs@{ flake-parts, ... }:'
-  echo '    flake-parts.lib.mkFlake { inherit inputs; } {'
-  echo '      imports = [ ./flake/hosts.nix ];'
-  echo '      systems = [ "x86_64-linux" ];'
-  echo '    };'
-  echo '}'
+  cat <<EOF
+  };
+
+  outputs = inputs@{ flake-parts, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      imports = [ ./flake/hosts.nix ];
+      systems = [ "$SYSTEM" ];
+    };
+}
+EOF
 } > "$OUTDIR/flake.nix"
 
 # ── flake/hosts.nix ─────────────────────────────────────────────────
 
-{
-  echo '# flake/hosts.nix — one import per host'
-  echo '{ ... }: {'
-  echo '  imports = ['
-  echo "    ../hosts/$HOSTNAME/$HOSTNAME.nix"
-  echo '  ];'
-  echo '}'
-} > "$OUTDIR/flake/hosts.nix"
+cat <<EOF > "$OUTDIR/flake/hosts.nix"
+# flake/hosts.nix — one import per host
+{ ... }: {
+  imports = [
+    ../hosts/$HOSTNAME/$HOSTNAME.nix
+  ];
+}
+EOF
 
 # ── hosts/<name>/<name>.nix ─────────────────────────────────────────
 
 {
-  echo "# hosts/$HOSTNAME/$HOSTNAME.nix"
-  echo '{ inputs, ... }: {'
-  echo "  flake.nixosConfigurations.$HOSTNAME = inputs.nixpkgs.lib.nixosSystem {"
-  echo '    system = "x86_64-linux";'
-  echo '    specialArgs = { inherit inputs; };'
-  echo '    modules = ['
-  echo ''
-  echo '      # ── Core ────────────────────────────────────────────'
-  echo '      ./configuration.nix'
+  cat <<EOF
+# hosts/$HOSTNAME/$HOSTNAME.nix
+{ inputs, ... }: {
+  flake.nixosConfigurations.$HOSTNAME = inputs.nixpkgs.lib.nixosSystem {
+    system = "$SYSTEM";
+    specialArgs = { inherit inputs; };
+    modules = [
+
+      # ── Host ────────────────────────────────────────────
+      ./configuration.nix
+
+      # ── Modules ─────────────────────────────────────────
+EOF
   for m in "${MODULES[@]}"; do
-    echo "      ../../modules/$m"
+    printf '      ../../modules/%s\n' "$m"
   done
-  if [ "$USE_AGENIX" = true ]; then
-    echo ''
-    echo '      # ── Agenix ──────────────────────────────────────────'
-    echo '      inputs.agenix.nixosModules.default'
-  fi
-  if [ "$USE_HM" = true ]; then
-    echo ''
-    echo '      # ── Home Manager ────────────────────────────────────'
-    echo '      inputs.home-manager.nixosModules.home-manager'
-    echo '      {'
-    echo '        home-manager.useGlobalPkgs = true;'
-    echo '        home-manager.useUserPackages = true;'
-    echo "        home-manager.users.$USERNAME = import ../../modules/home/$USERNAME/default.nix;"
-    echo '      }'
-  fi
-  echo ''
-  echo '    ];'
-  echo '  };'
-  echo '}'
+  cat <<EOF
+
+    ];
+  };
+}
+EOF
 } > "$OUTDIR/hosts/$HOSTNAME/$HOSTNAME.nix"
 
 # ── hosts/<name>/configuration.nix ──────────────────────────────────
 
+cat <<EOF > "$OUTDIR/hosts/$HOSTNAME/configuration.nix"
+# hosts/$HOSTNAME/configuration.nix
+{ pkgs, ... }:
 {
-  echo "# hosts/$HOSTNAME/configuration.nix"
-  echo '{ pkgs, ... }:'
-  echo '{'
-  echo '  imports = [ ./hardware-configuration.nix ];'
-  echo ''
-  echo '  # Bootloader (UEFI). For legacy BIOS use boot.loader.grub instead.'
-  echo '  boot.loader.systemd-boot.enable = true;'
-  echo '  boot.loader.efi.canTouchEfiVariables = true;'
-  echo ''
-  echo "  networking.hostName = \"$HOSTNAME\";"
-  echo "  time.timeZone = \"$TIMEZONE\";"
-  echo ''
-  echo "  users.users.$USERNAME = {"
-  echo '    isNormalUser = true;'
-  echo "    description = \"$USERNAME\";"
-  echo '    extraGroups = [ "wheel" "networkmanager" ];'
-  echo '    # Add your SSH public key(s) here before enabling ssh-hardened:'
-  echo '    # openssh.authorizedKeys.keys = [ "ssh-ed25519 AAAA..." ];'
-  echo '  };'
-  echo ''
-  echo '  environment.systemPackages = with pkgs; ['
-  echo '    vim'
-  echo '    wget'
-  echo '    curl'
-  echo '  ];'
-  echo ''
-  echo '  # VM test settings — applied ONLY by `nixos-rebuild build-vm`,'
-  echo '  # ignored entirely on a real installation. Sized from the machine'
-  echo '  # that generated this config; adjust freely.'
-  echo '  virtualisation.vmVariant = {'
-  echo "    virtualisation.memorySize = $VM_MEM;"
-  echo "    virtualisation.cores = $VM_CORES;"
-  echo "    users.users.$USERNAME.initialPassword = \"test\";"
-  echo '  };'
-  echo ''
-  echo "  system.stateVersion = \"$STATE_VERSION\"; # do not change after install"
-  echo '}'
-} > "$OUTDIR/hosts/$HOSTNAME/configuration.nix"
+  imports = [ ./hardware-configuration.nix ];
 
-# ── hosts/<name>/hardware-configuration.nix (placeholder) ───────────
+  # Bootloader (UEFI). For legacy BIOS use boot.loader.grub instead.
+  boot.loader.systemd-boot.enable = true;
+  boot.loader.efi.canTouchEfiVariables = true;
 
-{
-  echo '# PLACEHOLDER — replace before installing on real hardware:'
-  echo "#   nixos-generate-config --show-hardware-config > hosts/$HOSTNAME/hardware-configuration.nix"
-  echo '# This stub is sufficient for VM testing (nixos-rebuild build-vm);'
-  echo '# a real install will refuse to build until it is replaced.'
-  echo '{ }'
-} > "$OUTDIR/hosts/$HOSTNAME/hardware-configuration.nix"
+  networking.hostName = "$HOSTNAME";
+  time.timeZone = "$TIMEZONE";
 
-# ── home-manager stub ───────────────────────────────────────────────
+  users.users.$USERNAME = {
+    isNormalUser = true;
+    description = "$USERNAME";
+    extraGroups = [ "wheel" "networkmanager" ];
+    $PASSWORD_NIX
+  };
 
-if [ "$USE_HM" = true ]; then
-  mkdir -p "$OUTDIR/modules/home/$USERNAME"
-  {
-    echo "# modules/home/$USERNAME/default.nix"
-    echo '{ ... }:'
-    echo '{'
-    echo "  home.username = \"$USERNAME\";"
-    echo "  home.homeDirectory = \"/home/$USERNAME\";"
-    echo "  home.stateVersion = \"$STATE_VERSION\";"
-    echo ''
-    echo '  programs.git = {'
-    echo '    enable = true;'
-    echo '    # userName = "Your Name";'
-    echo '    # userEmail = "you@example.com";'
-    echo '  };'
-    echo '}'
-  } > "$OUTDIR/modules/home/$USERNAME/default.nix"
+  environment.systemPackages = with pkgs; [
+    vim
+    wget
+    curl
+  ];
+
+  # VM test settings — applied ONLY by \`nixos-rebuild build-vm\`,
+  # ignored entirely on a real installation. Sized from the machine
+  # that generated this config; adjust freely.
+  virtualisation.vmVariant = {
+    virtualisation.memorySize = $VM_MEM;
+    virtualisation.cores = $VM_CORES;
+  };
+
+  system.stateVersion = "$STATE_VERSION"; # do not change after install
+}
+EOF
+
+# ── hosts/<name>/hardware-configuration.nix ─────────────────────────
+
+HW_CAPTURED=false
+if [ "$CAPTURE_HW" = true ]; then
+  ROOT_ARGS=()
+  [ "$INSTALL_MODE" = true ] && ROOT_ARGS=(--root /mnt)
+  if nixos-generate-config "${ROOT_ARGS[@]}" --show-hardware-config \
+      > "$OUTDIR/hosts/$HOSTNAME/hardware-configuration.nix" 2>/dev/null; then
+    HW_CAPTURED=true
+  else
+    note "nixos-generate-config failed (it may need sudo) — writing placeholder instead."
+  fi
 fi
 
-# ── agenix stub ─────────────────────────────────────────────────────
-
-if [ "$USE_AGENIX" = true ]; then
-  mkdir -p "$OUTDIR/secrets"
-  {
-    echo '# secrets/secrets.nix — agenix recipient definitions.'
-    echo '# Public keys only. NEVER commit private keys or plaintext secrets.'
-    echo 'let'
-    echo "  $USERNAME = \"REPLACE-WITH-YOUR-SSH-PUBLIC-KEY\";"
-    echo "  $HOSTNAME = \"REPLACE-WITH-HOST-SSH-PUBLIC-KEY\"; # /etc/ssh/ssh_host_ed25519_key.pub"
-    echo 'in'
-    echo '{'
-    echo "  # \"example.age\".publicKeys = [ $USERNAME $HOSTNAME ];"
-    echo '}'
-  } > "$OUTDIR/secrets/secrets.nix"
+if [ "$HW_CAPTURED" = false ]; then
+  cat <<EOF > "$OUTDIR/hosts/$HOSTNAME/hardware-configuration.nix"
+# PLACEHOLDER — replace before installing on real hardware:
+#   nixos-generate-config --show-hardware-config > hosts/$HOSTNAME/hardware-configuration.nix
+# This stub is sufficient for VM testing (nixos-rebuild build-vm);
+# a real install will refuse to build until it is replaced.
+{ }
+EOF
 fi
+
+# ── update.sh ───────────────────────────────────────────────────────
+
+cat <<EOF > "$OUTDIR/update.sh"
+#!/usr/bin/env bash
+# Update all inputs and switch to the new system.
+# If anything breaks afterwards, reboot and choose the previous
+# generation in the boot menu — that rolls the whole system back.
+set -euo pipefail
+cd "\$(dirname "\$0")"
+nix flake update
+sudo nixos-rebuild switch --flake .#$HOSTNAME
+EOF
+chmod +x "$OUTDIR/update.sh"
 
 # ── README ──────────────────────────────────────────────────────────
+# Quoted heredocs (no expansion — the code fences make that unsafe),
+# with placeholders substituted afterwards, assembled in chunks.
+
+subst() {
+  sed -e "s|@HOSTNAME@|$HOSTNAME|g" \
+      -e "s|@USERNAME@|$USERNAME|g" \
+      -e "s|@PW_HINT@|$PW_HINT|g"
+}
 
 {
-  echo "# $HOSTNAME NixOS configuration"
-  echo ''
-  echo 'Generated by space-elevator. Structure:'
-  echo ''
-  echo '- flake.nix — inputs and flake-parts entry'
-  echo '- flake/hosts.nix — registers each host'
-  echo "- hosts/$HOSTNAME/ — per-machine config"
-  echo '- modules/ — reusable feature modules (importing a file enables it)'
-  echo ''
-  echo '## Test drive in a VM (no installation needed)'
-  echo ''
-  echo '```'
-  echo 'git init && git add -A   # flakes only see tracked files'
-  echo "nixos-rebuild build-vm --flake .#$HOSTNAME"
-  echo "./result/bin/run-$HOSTNAME-vm"
-  echo '```'
-  echo ''
-  echo 'Log in with your username and password `test` (VM only — real installs'
-  echo "are unaffected). Delete $HOSTNAME.qcow2 for a factory-fresh boot."
-  echo ''
-  echo '## Installing on real hardware'
-  echo ''
-  echo '1. Replace the placeholder hardware config on the target machine:'
-  echo '   ```'
-  echo "   nixos-generate-config --show-hardware-config > hosts/$HOSTNAME/hardware-configuration.nix"
-  echo '   ```'
-  echo '2. Flakes only see files tracked by git:'
-  echo '   ```'
-  echo '   git init && git add -A'
-  echo '   ```'
-  echo '3. Build and switch:'
-  echo '   ```'
-  echo "   sudo nixos-rebuild switch --flake .#$HOSTNAME"
-  echo '   ```'
-  echo ''
-  echo '## Adding another host'
-  echo ''
-  echo "Copy hosts/$HOSTNAME to hosts/<newname>, rename the files, adjust the"
-  echo 'module list, and add one line to flake/hosts.nix.'
-  if [ "$USE_AGENIX" = true ]; then
-    echo ''
-    echo '## Secrets (agenix)'
-    echo ''
-    echo 'Put your SSH *public* keys in secrets/secrets.nix, then create secrets with'
-    echo '`agenix -e mysecret.age`. Encrypted .age files are safe to commit;'
-    echo 'plaintext never touches the repo.'
-  fi
+subst <<'EOF'
+# @HOSTNAME@ NixOS desktop
+
+Generated by space-elevator. Structure:
+
+- flake.nix — inputs and flake-parts entry
+- flake/hosts.nix — registers each host
+- hosts/@HOSTNAME@/ — per-machine config
+- modules/ — feature modules (importing a file enables it; delete the
+  import line in hosts/@HOSTNAME@/@HOSTNAME@.nix to disable one)
+- update.sh — update everything and switch
+
+## Test drive in a VM (no installation needed)
+
+```
+git init && git add -A   # flakes only see tracked files
+nixos-rebuild build-vm --flake .#@HOSTNAME@
+./result/bin/run-@HOSTNAME@-vm
+```
+
+Log in as @USERNAME@ with @PW_HINT@. Delete @HOSTNAME@.qcow2 for a
+factory-fresh boot.
+
+## Installing on real hardware
+
+EOF
+if [ "$INSTALL_MODE" = true ]; then
+  subst <<'EOF'
+This config was generated in the installer with your mounted system at
+/mnt, and the hardware configuration was captured from it. To install:
+
+1. `git init && git add -A` (flakes only see tracked files)
+2. `sudo nixos-install --flake .#@HOSTNAME@`
+3. Set the root password when prompted, then reboot.
+EOF
+elif [ "$HW_CAPTURED" = true ]; then
+  subst <<'EOF'
+hardware-configuration.nix was captured from the machine that generated
+this config. Installing on a *different* machine? Regenerate it there:
+
+```
+nixos-generate-config --show-hardware-config > hosts/@HOSTNAME@/hardware-configuration.nix
+```
+
+Then:
+
+1. `git init && git add -A` (flakes only see tracked files)
+2. `sudo nixos-rebuild switch --flake .#@HOSTNAME@`
+EOF
+else
+  subst <<'EOF'
+1. Replace the placeholder hardware config on the target machine:
+   ```
+   nixos-generate-config --show-hardware-config > hosts/@HOSTNAME@/hardware-configuration.nix
+   ```
+2. `git init && git add -A` (flakes only see tracked files)
+3. `sudo nixos-rebuild switch --flake .#@HOSTNAME@`
+EOF
+fi
+subst <<'EOF'
+
+## Installing apps
+
+Open your desktop's app store (Discover, GNOME Software, or COSMIC
+Store) to install applications from Flathub with a click — no
+configuration editing needed. System-level packages live in
+hosts/@HOSTNAME@/configuration.nix under environment.systemPackages.
+
+## Updating
+
+Run `./update.sh`. It updates every input and switches to the new
+system. **If an update ever breaks something, reboot and pick the
+previous entry in the boot menu** — NixOS keeps old generations
+around, so rolling back is always one reboot away.
+
+## Adding another host
+
+Copy hosts/@HOSTNAME@ to hosts/<newname>, rename the files, adjust the
+module list, and add one line to flake/hosts.nix.
+EOF
 } > "$OUTDIR/README.md"
 
 # ── Done ────────────────────────────────────────────────────────────
+
+if [ "$INSTALL_MODE" = true ]; then
+  INSTALL_HINT="  sudo nixos-install --flake .#$HOSTNAME   (then set root password and reboot)"
+elif [ "$HW_CAPTURED" = true ]; then
+  INSTALL_HINT="  sudo nixos-rebuild switch --flake .#$HOSTNAME   (hardware config already captured)"
+else
+  INSTALL_HINT="  1. nixos-generate-config --show-hardware-config > hosts/$HOSTNAME/hardware-configuration.nix
+  2. sudo nixos-rebuild switch --flake .#$HOSTNAME"
+fi
 
 COUNT="${#MODULES[@]}"
 gum style \
@@ -456,13 +634,12 @@ gum style \
   "Test drive it in a VM right now:" \
   "  cd $OUTDIR && git init && git add -A" \
   "  nixos-rebuild build-vm --flake .#$HOSTNAME" \
-  "  ./result/bin/run-$HOSTNAME-vm    (login: $USERNAME / test)" \
+  "  ./result/bin/run-$HOSTNAME-vm    (login: $USERNAME / $PW_HINT)" \
   "" \
   "Install on real hardware:" \
-  "  1. nixos-generate-config --show-hardware-config > hosts/$HOSTNAME/hardware-configuration.nix" \
-  "  2. sudo nixos-rebuild switch --flake .#$HOSTNAME"
+  "$INSTALL_HINT"
 
-if gum confirm "Initialize a git repository in $OUTDIR now?"; then
+if prompt_confirm "Initialize a git repository in $OUTDIR now? (flakes require tracked files)" y; then
   git -C "$OUTDIR" init -q
   git -C "$OUTDIR" add -A
   gum style --foreground 2 "Git repo initialized and files staged."

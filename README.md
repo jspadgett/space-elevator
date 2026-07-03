@@ -1,6 +1,6 @@
 # 🚀 Space Elevator
 
-**From bare metal to orbit.** An interactive generator for complete, modular NixOS flake configurations — answer a few questions in your terminal and get a ready-to-boot flake built on the [flake-parts](https://github.com/hercules-ci/flake-parts) host pattern with one-file-per-feature modules.
+**Your NixOS desktop, built to order.** Answer four questions — hostname, username, desktop environment, flavors — and get a complete, ready-to-boot NixOS desktop flake with distro-grade defaults. Hardware is auto-detected and confirmed, not interrogated.
 
 ## Quick start
 
@@ -8,50 +8,68 @@
 nix run github:jspadgett/space-elevator
 ```
 
-That's it. No cloning, no setup. You'll be prompted for:
+If Nix complains about experimental features:
 
-- Hostname and username
-- Timezone
-- GPU vendor
-- Desktop environment
-- Feature modules to include
+```sh
+nix run --experimental-features 'nix-command flakes' github:jspadgett/space-elevator
+```
 
-The generated configuration lands in `./nixos-config` (configurable), complete with its own README covering first-boot steps.
+That's it. No cloning, no setup. It also works from the NixOS installer
+ISO: partition and mount your disks at /mnt as usual, run the tool, and
+it will detect the installer environment and set everything up for
+`nixos-install`. The generated configuration lands in `./nixos-config` (configurable), complete with its own README covering first-boot steps.
 
-## Why this exists
+## What you get without asking
 
-Starting a NixOS configuration from scratch means making a dozen structural decisions before you've written a single line: flake layout, module organization, options plumbing, host separation. Space Elevator makes those decisions for you with a pattern that stays maintainable as your config grows — then gets out of the way. The output is plain Nix with no framework dependency on this tool; once generated, the configuration is entirely yours.
+Like any good desktop distro, the baseline just works. Every generated config includes:
+
+**Hardware & drivers** — GPU driver matched to your detected card (AMD / Intel / NVIDIA), firmware updates (fwupd), periodic SSD TRIM, TLP power management on laptops.
+
+**Desktop plumbing** — PipeWire audio, Bluetooth, CUPS printing with network discovery, auto-mounting and MTP support (gvfs/udisks2), Nerd Fonts + Noto, everyday apps, Flatpak with Flathub pre-configured.
+
+**System sanity** — NetworkManager, a drop-by-default firewall, zram swap, earlyoom, automatic Nix garbage collection, and quality-of-life Nix tooling (nh, nvd, nix-tree).
+
+**A GUI app store** — Discover, GNOME Software, or COSMIC Store wired to Flathub, so installing apps never requires editing a config file. Plus a generated `update.sh` for one-command system updates, with NixOS generation rollback as the safety net.
+
+## The questions
+
+1. **Hostname**, **username**, and an optional **login password** (hashed into the config so first boot just works)
+2. **Desktop environment** — KDE Plasma, GNOME, COSMIC, or Hyprland
+3. **Flavors** — optional bundles: Gaming (Steam + gamemode), Development (Docker + libvirt), Catppuccin theming, KDE Connect
+
+Everything else is detected from the machine and confirmed with a keypress: GPU vendor, laptop vs. desktop, timezone, locale, and keyboard layout. On NixOS it offers to capture your real hardware configuration; in the installer ISO it sets up for `nixos-install` directly.
+
+## Non-interactive mode
+
+Set `SE_NONINTERACTIVE=1` plus any `SE_*` variables (see the header of `scaffold.sh`) to generate without prompts — useful for scripting and CI. The test suite in `tests/run.sh` uses this to generate and verify a config for every desktop environment, and CI evaluates each one against nixpkgs.
 
 ## Design principles
 
-**Self-contained.** Every module offered by the generator is vendored in this repository under `modules/`. Nothing is fetched from any personal configuration at run time, so output is reproducible and auditable.
+**Defaults over decisions.** Anything with an obviously correct answer for a desktop is baked in. You choose identity (hostname, user, DE, flavors); the tool handles plumbing.
 
-**Import-is-enable.** Modules contain no options plumbing. Importing a file turns the feature on; deleting the import line turns it off. Your generated config stays readable at a glance.
+**Self-contained.** Every module is vendored in this repository under `modules/`. Nothing is fetched at run time, so output is reproducible and auditable.
 
-**Sane exclusivity.** Mutually exclusive choices are single-select — one desktop environment, one GPU vendor. Complementary features (say, zram alongside a swapfile) can be freely combined.
+**Import-is-enable.** Modules contain no options plumbing. Importing a file turns the feature on; deleting the import line turns it off. The baseline is just imports too — nothing is locked in.
 
-**Optional inputs stay optional.** `home-manager`, `agenix`, and `catppuccin` only appear as inputs in the generated `flake.nix` if you actually select them. No dead weight in your lock file.
+**No framework dependency.** The output is plain Nix. Once generated, the configuration is entirely yours.
 
 ## Module catalog
 
 | Category | Modules |
 |---|---|
-| **Core** | base · base-locale · base-agenix |
-| **Desktop** | plasma · hyprland · cosmic · gnome · audio (PipeWire) · bluetooth · printing · nerdfonts · theming (Catppuccin) · desktop-packages |
-| **GPU** | amdgpu · intel-gpu · nvidia |
-| **Network** | networkmanager · tailscale · mullvad · ssh-hardened · fail2ban · mtr |
-| **Gaming** | steam · gamemode |
-| **Apps** | flatpak · appimage · signal · virtualisation · docker |
-| **Tuning** | nix-gc · nix-tools · zram · swapfile · earlyoom · ssd · firewall · auto-upgrade · tlp · shell-zsh · gpgagent · gvfs · syncthing |
+| **Baseline (always)** | base · base-locale · audio · bluetooth · printing · nerdfonts · desktop-packages · networkmanager · firewall · flatpak · nix-gc · nix-tools · zram · gvfs · earlyoom |
+| **Detected** | amdgpu / intel-gpu / nvidia · tlp (laptops) |
+| **Desktop (pick one)** | plasma · gnome · cosmic · hyprland (each with its app store) |
+| **Flavors (optional)** | steam + gamemode · docker + virtualisation · theming (Catppuccin) · kdeconnect |
 
 ## Extending
 
 Adding a module takes two steps:
 
 1. Drop a `.nix` file into the appropriate `modules/` category.
-2. Add one `add_if`/menu line in `scaffold.sh`.
+2. Add it to the baseline array or a flavor line in `scaffold.sh`.
 
-That's the entire registration process — no schema, no manifest, no codegen.
+No schema, no manifest, no codegen. Modules that need the user's name can use the `@USERNAME@` placeholder — it's substituted automatically.
 
 ## Requirements
 

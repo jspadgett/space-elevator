@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  generate:
+    name: ShellCheck + generation harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update -q && sudo apt-get install -y shellcheck
+      - name: Lint scripts
+        run: shellcheck -S info -e SC2016 scaffold.sh tests/run.sh
+      - name: Generate configs for every desktop
+        run: bash tests/run.sh
+
+  eval:
+    name: Evaluate generated config (${{ matrix.de }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        de: ["KDE Plasma", "GNOME", "COSMIC", "Hyprland"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Generate a full-flavor config
+        env:
+          SE_NONINTERACTIVE: "1"
+          SE_HOSTNAME: citest
+          SE_USERNAME: ci
+          SE_TIMEZONE: Etc/UTC
+          SE_LOCALE: en_US.UTF-8
+          SE_KEYMAP: us
+          SE_GPU: NVIDIA
+          SE_DE: ${{ matrix.de }}
+          SE_FLAVORS: gaming,development,theming,kdeconnect
+          SE_OUTDIR: ${{ github.workspace }}/out
+        run: MODULE_SOURCE="$PWD/modules" bash scaffold.sh
+      - name: Evaluate the VM build (exercises every module)
+        working-directory: out
+        run: |
+          nix eval \
+            .#nixosConfigurations.citest.config.system.build.vm.drvPath

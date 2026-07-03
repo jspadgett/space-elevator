@@ -1,8 +1,8 @@
 {
-  description = "Space Elevator - interactive NixOS flake generator. From bare metal to orbit.";
+  description = "Space Elevator - opinionated NixOS desktop generator. From bare metal to orbit.";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
   };
 
   outputs = { self, nixpkgs, ... }:
@@ -13,7 +13,7 @@
         let pkgs = nixpkgs.legacyPackages.${system};
         in pkgs.writeShellApplication {
           name = "space-elevator";
-          runtimeInputs = with pkgs; [ gum coreutils gnused git ];
+          runtimeInputs = with pkgs; [ gum coreutils gnused gnugrep git pciutils mkpasswd ];
           excludeShellChecks = [ "SC2016" ];
           text = ''
             MODULE_SOURCE="${./modules}"
