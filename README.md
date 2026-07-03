@@ -1,23 +1,21 @@
 # 🚀 Space Elevator
 
-**Your NixOS desktop, built to order.** Answer four questions — hostname, username, desktop environment, flavors — and get a complete, ready-to-boot NixOS desktop flake with distro-grade defaults. Hardware is auto-detected and confirmed, not interrogated.
+![CI](https://github.com/jspadgett/space-elevator/actions/workflows/ci.yml/badge.svg)
 
-## Quick start
+**Space Elevator gets you to orbit. What you do up there is your business.**
 
-```sh
+Answer four questions, get a complete NixOS desktop with everything
+working — app store, updates, rollback. If that's all you ever want,
+you never touch a config file. But the thing you're running is plain
+NixOS: every feature is one line, all of nixpkgs is one search away,
+and your daily driver is your gateway to Nix space.
+
+​```sh
 nix run github:jspadgett/space-elevator
-```
+​```
 
-If Nix complains about experimental features:
-
-```sh
-nix run --experimental-features 'nix-command flakes' github:jspadgett/space-elevator
-```
-
-That's it. No cloning, no setup. It also works from the NixOS installer
-ISO: partition and mount your disks at /mnt as usual, run the tool, and
-it will detect the installer environment and set everything up for
-`nixos-install`. The generated configuration lands in `./nixos-config` (configurable), complete with its own README covering first-boot steps.
+**New to NixOS?** The [complete beginner's guide](./docs/INSTALL.md)
+takes you from blank USB stick to working desktop.
 
 ## What you get without asking
 
