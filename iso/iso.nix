@@ -31,7 +31,7 @@
   # NetworkManager (nmtui is a menu) instead of the minimal ISO's
   # default wpa_supplicant (which is config files).
   networking.networkmanager.enable = true;
-  networking.wireless.enable = false;
+  networking.wireless.enable = lib.mkForce false;
 
   # ── Greeting on the auto-logged-in console ────────────────────────
   services.getty.helpLine = lib.mkAfter ''
