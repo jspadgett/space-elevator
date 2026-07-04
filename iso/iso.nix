@@ -6,7 +6,7 @@
   imports = [ "${modulesPath}/installer/cd-dvd/installation-cd-minimal.nix" ];
 
   # ── Branding ──────────────────────────────────────────────────────
-  isoImage.isoBaseName = "space-elevator";
+  isoImage.isoBaseName = lib.mkForce "space-elevator-26.05-x86_64";
   isoImage.volumeID = "SPACE_ELEVATOR";
   # zstd builds much faster than the default xz at a modest size cost;
   # the minimal base leaves plenty of headroom under GitHub's 2 GiB
