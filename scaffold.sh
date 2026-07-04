@@ -453,6 +453,13 @@ fi
 header "Generating $OUTDIR"
 GENERATING=true
 
+if ! mkdir -p "$OUTDIR" 2>/dev/null; then
+  # Target is on a root-owned filesystem (e.g. /mnt/etc/nixos in the
+  # installer) — create it privileged, then hand it to this user so
+  # normal file writes and git work.
+  sudo mkdir -p "$OUTDIR"
+  sudo chown "$(id -u):$(id -g)" "$OUTDIR"
+fi
 mkdir -p "$OUTDIR/flake" "$OUTDIR/hosts/$HOSTNAME" "$OUTDIR/modules"
 
 # Copy selected modules
@@ -588,8 +595,11 @@ HW_CAPTURED=false
 if [ "$CAPTURE_HW" = true ]; then
   ROOT_ARGS=()
   [ "$INSTALL_MODE" = true ] && ROOT_ARGS=(--root /mnt)
-  if nixos-generate-config "${ROOT_ARGS[@]}" --show-hardware-config \
-      > "$OUTDIR/hosts/$HOSTNAME/hardware-configuration.nix" 2>/dev/null; then
+  HW_TEXT=$(nixos-generate-config "${ROOT_ARGS[@]}" --show-hardware-config 2>/dev/null) \
+    || HW_TEXT=$(sudo -n nixos-generate-config "${ROOT_ARGS[@]}" --show-hardware-config 2>/dev/null) \
+    || HW_TEXT=""
+  if [ -n "$HW_TEXT" ]; then
+    printf '%s\n' "$HW_TEXT" > "$OUTDIR/hosts/$HOSTNAME/hardware-configuration.nix"
     HW_CAPTURED=true
   else
     note "nixos-generate-config failed (it may need sudo) — writing placeholder instead."
