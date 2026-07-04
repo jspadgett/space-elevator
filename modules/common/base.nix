@@ -1,9 +1,9 @@
 # modules/common/base.nix
 # Generic core: flakes, latest kernel, unfree, polkit, firmware updates.
 # No inputs dependency.
-{ pkgs, ... }:
+{ lib, pkgs, ... }:
 {
-  boot.kernelPackages = pkgs.linuxPackages_latest;
+  boot.kernelPackages = lib.mkDefault pkgs.linuxPackages_latest;
 
   # Distro-standard housekeeping
   services.fwupd.enable = true;   # firmware updates (fwupdmgr)

@@ -55,10 +55,13 @@ prompt_confirm() {
 }
 
 GENERATING=false
+DISK_TOUCHED=false
 on_err() {
   echo
   if [ "$GENERATING" = true ]; then
     gum style --foreground 1 "Generation failed — $OUTDIR may be incomplete."
+  elif [ "$DISK_TOUCHED" = true ]; then
+    gum style --foreground 1 "Disk setup failed — $TARGET_DISK has been modified. Re-run the wizard to try again."
   else
     note "Aborted — nothing was written."
   fi
@@ -75,6 +78,95 @@ if [ "$NONINT" != 1 ]; then
     "Your NixOS desktop, built to order:" \
     "a few quick questions, distro-grade defaults."
 fi
+
+# ── Installer environment (ISO): network + disk, fully guided ──────
+
+INSTALL_MODE=false
+TARGET_DISK=""
+# The live installer ISO is identifiable by its read-only squashfs
+# store / medium mount — an installed system has neither, even though
+# it also has nixos-install on PATH.
+IS_ISO=false
+if findmnt -rno TARGET /iso >/dev/null 2>&1 \
+    || findmnt -rno TARGET /nix/.ro-store >/dev/null 2>&1; then
+  IS_ISO=true
+fi
+if [ "$NONINT" != 1 ] && [ "$IS_ISO" = true ] \
+    && command -v nixos-install >/dev/null 2>&1; then
+  header "Welcome — let's install NixOS"
+
+  # 1. Network (needed later, when nixos-install downloads packages)
+  while ! nm-online -q -t 3 2>/dev/null \
+      && ! ping -c1 -W2 cache.nixos.org >/dev/null 2>&1; do
+    if gum confirm "No internet connection detected. Open the Wi-Fi menu (nmtui)?"; then
+      nmtui-connect || true
+    else
+      note "Continuing offline — installation will need a connection later."
+      break
+    fi
+  done
+
+  # 2. Target disk
+  if grep -q ' /mnt ' /proc/mounts; then
+    gum confirm "Found a disk already mounted at /mnt — install there?" && INSTALL_MODE=true
+  fi
+  if [ "$INSTALL_MODE" = false ] && command -v parted >/dev/null 2>&1; then
+    if gum confirm "Erase a disk and install NixOS on it? (guided — the disk will be wiped)"; then
+      # Never offer the stick we booted from
+      BOOT_SRC=$(findmnt -no SOURCE /iso 2>/dev/null || true)
+      BOOT_DEV=""
+      [ -n "$BOOT_SRC" ] && BOOT_DEV=$(lsblk -no PKNAME "$BOOT_SRC" 2>/dev/null || true)
+      CHOICES=()
+      while read -r name size model; do
+        [ "$name" = "$BOOT_DEV" ] && continue
+        CHOICES+=("$name ($size ${model:-disk})")
+      done < <(lsblk -dno NAME,SIZE,MODEL,TYPE | awk '$NF=="disk" {NF--; print}')
+      if [ "${#CHOICES[@]}" -eq 0 ]; then
+        note "No usable disks found."
+      else
+        PICK=$(pick_one "Install to which disk? (EVERYTHING on it will be erased)" "${CHOICES[@]}")
+        TARGET_DISK="/dev/${PICK%% *}"
+        CONFIRM=$(gum input --header "This will PERMANENTLY ERASE $TARGET_DISK. Type ERASE to confirm:")
+        if [ "$CONFIRM" = "ERASE" ]; then
+          case "$TARGET_DISK" in *[0-9]) P="p" ;; *) P="" ;; esac
+          DISK_TOUCHED=true
+          sudo wipefs -af "$TARGET_DISK" >/dev/null
+          if [ -d /sys/firmware/efi ]; then
+            sudo parted -s "$TARGET_DISK" -- mklabel gpt \
+              mkpart ESP fat32 1MiB 513MiB set 1 esp on \
+              mkpart root ext4 513MiB 100%
+            sudo udevadm settle
+            sudo mkfs.fat -F 32 -n BOOT "$TARGET_DISK${P}1" >/dev/null
+            sudo mkfs.ext4 -qF -L nixos "$TARGET_DISK${P}2"
+            sudo mount "$TARGET_DISK${P}2" /mnt
+            sudo mkdir -p /mnt/boot
+            sudo mount "$TARGET_DISK${P}1" /mnt/boot
+          else
+            sudo parted -s "$TARGET_DISK" -- mklabel gpt \
+              mkpart biosboot 1MiB 2MiB set 1 bios_grub on \
+              mkpart root ext4 2MiB 100%
+            sudo udevadm settle
+            sudo mkfs.ext4 -qF -L nixos "$TARGET_DISK${P}2"
+            sudo mount "$TARGET_DISK${P}2" /mnt
+          fi
+          INSTALL_MODE=true
+          gum style --foreground 2 "Disk ready and mounted at /mnt."
+        else
+          note "Not confirmed — no disk was touched."
+        fi
+      fi
+    fi
+  fi
+  if [ "$INSTALL_MODE" = false ]; then
+    note "No install target — generating a config only. Mount a disk at /mnt and re-run to install."
+  fi
+fi
+if [ "$INSTALL_MODE" = false ] && [ "$NONINT" != 1 ] && [ "$IS_ISO" = false ] \
+    && command -v nixos-install >/dev/null 2>&1 \
+    && grep -q ' /mnt ' /proc/mounts; then
+  gum confirm "Found a filesystem mounted at /mnt — set this config up for 'nixos-install' onto it?" && INSTALL_MODE=true
+fi
+CAPTURE_HW=$INSTALL_MODE
 
 # ── Basics ──────────────────────────────────────────────────────────
 
@@ -162,10 +254,12 @@ fi
 [[ "$LOCALE" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "Invalid locale: $LOCALE"
 [[ "$KB_LAYOUT" =~ ^[a-z]+(,[a-z]+)*$ ]] || die "Invalid keyboard layout: $KB_LAYOUT"
 
+OUT_DEFAULT="./nixos-config"
+[ "$INSTALL_MODE" = true ] && OUT_DEFAULT="/mnt/etc/nixos"
 if [ "$NONINT" = 1 ]; then
-  OUTDIR="${SE_OUTDIR:-./nixos-config}"
+  OUTDIR="${SE_OUTDIR:-$OUT_DEFAULT}"
 else
-  OUTDIR=$(gum input --header "Output directory:" --value "./nixos-config")
+  OUTDIR=$(gum input --header "Output directory:" --value "$OUT_DEFAULT")
 fi
 if [ -d "$OUTDIR" ] && [ -n "$(ls -A "$OUTDIR" 2>/dev/null)" ]; then
   prompt_confirm "$OUTDIR exists and is not empty. Overwrite generated files?" y || {
@@ -210,17 +304,6 @@ if compgen -G "/sys/class/power_supply/BAT*" >/dev/null; then
     USE_TLP=true
   else
     gum confirm "Battery detected (laptop) — include TLP power management?" && USE_TLP=true
-  fi
-fi
-
-# Installer ISO detection: nixos-install available and a target mounted at /mnt
-INSTALL_MODE=false
-CAPTURE_HW=false
-if [ "$NONINT" != 1 ] && command -v nixos-install >/dev/null 2>&1 \
-    && grep -q ' /mnt ' /proc/mounts; then
-  if gum confirm "Installer environment detected (target mounted at /mnt). Set this config up for 'nixos-install'?"; then
-    INSTALL_MODE=true
-    CAPTURE_HW=true
   fi
 fi
 
@@ -330,6 +413,22 @@ case "$(uname -m)" in
   aarch64) SYSTEM="aarch64-linux" ;;
   *)       SYSTEM="x86_64-linux" ;;
 esac
+
+# UEFI machines get systemd-boot; legacy BIOS machines get GRUB aimed
+# at the target disk (derived from what's mounted at /mnt, or /).
+if [ -d /sys/firmware/efi ]; then
+  BOOTLOADER_NIX="boot.loader.systemd-boot.enable = true;
+  boot.loader.efi.canTouchEfiVariables = true;"
+else
+  DISK_FOR_GRUB="$TARGET_DISK"
+  if [ -z "$DISK_FOR_GRUB" ]; then
+    ROOT_SRC=$(findmnt -no SOURCE /mnt 2>/dev/null || findmnt -no SOURCE / 2>/dev/null || true)
+    PK=$(lsblk -no PKNAME "$ROOT_SRC" 2>/dev/null | head -1 || true)
+    DISK_FOR_GRUB="/dev/${PK:-sda}"
+  fi
+  BOOTLOADER_NIX="boot.loader.grub.enable = true;
+  boot.loader.grub.device = \"$DISK_FOR_GRUB\"; # legacy BIOS boot"
+fi
 
 # Scale the VM test defaults to this machine: half the cores (2–4),
 # a quarter of RAM (2–8 GB). Written into vmVariant; user-editable.
@@ -451,9 +550,8 @@ cat <<EOF > "$OUTDIR/hosts/$HOSTNAME/configuration.nix"
 {
   imports = [ ./hardware-configuration.nix ];
 
-  # Bootloader (UEFI). For legacy BIOS use boot.loader.grub instead.
-  boot.loader.systemd-boot.enable = true;
-  boot.loader.efi.canTouchEfiVariables = true;
+  # Bootloader (matched to this machine's firmware by the wizard)
+  $BOOTLOADER_NIX
 
   networking.hostName = "$HOSTNAME";
   time.timeZone = "$TIMEZONE";
@@ -477,6 +575,7 @@ cat <<EOF > "$OUTDIR/hosts/$HOSTNAME/configuration.nix"
   virtualisation.vmVariant = {
     virtualisation.memorySize = $VM_MEM;
     virtualisation.cores = $VM_CORES;
+    virtualisation.diskSize = 8192; # MB — room to actually try things
   };
 
   system.stateVersion = "$STATE_VERSION"; # do not change after install
@@ -517,7 +616,7 @@ cat <<EOF > "$OUTDIR/update.sh"
 set -euo pipefail
 cd "\$(dirname "\$0")"
 nix flake update
-sudo nixos-rebuild switch --flake .#$HOSTNAME
+nixos-rebuild switch --sudo --flake .#$HOSTNAME
 EOF
 chmod +x "$OUTDIR/update.sh"
 
@@ -643,4 +742,25 @@ if prompt_confirm "Initialize a git repository in $OUTDIR now? (flakes require t
   git -C "$OUTDIR" init -q
   git -C "$OUTDIR" add -A
   gum style --foreground 2 "Git repo initialized and files staged."
+fi
+
+if [ "$INSTALL_MODE" = true ]; then
+  if gum confirm "Begin the installation now? (downloads and installs your desktop — 10 to 30 minutes)"; then
+    # --no-root-passwd: root stays locked; your user has sudo via wheel
+    if sudo nixos-install --flake "$OUTDIR#$HOSTNAME" --no-root-passwd; then
+      gum style \
+        --border double --border-foreground 2 \
+        --padding "1 3" --margin "1 0" --align center \
+        "🚀 Installation complete!" \
+        "" \
+        "Remove the USB stick when the screen goes dark."
+      if gum confirm "Reboot into your new desktop now?"; then
+        sudo reboot
+      fi
+    else
+      gum style --foreground 1 "nixos-install reported an error — scroll up for details. Your config is safe at $OUTDIR; fix and re-run: sudo nixos-install --flake $OUTDIR#$HOSTNAME --no-root-passwd"
+    fi
+  else
+    note "When ready: sudo nixos-install --flake $OUTDIR#$HOSTNAME --no-root-passwd"
+  fi
 fi

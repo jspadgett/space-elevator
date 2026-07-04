@@ -31,6 +31,13 @@
 
       packages = forAllSystems (system: {
         default = mkScaffold system;
+        space-elevator = mkScaffold system;
       });
+
+      nixosConfigurations.space-elevator-iso = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        specialArgs = { space-elevator = mkScaffold "x86_64-linux"; };
+        modules = [ ./iso/iso.nix ];
+      };
     };
 }

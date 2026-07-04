@@ -46,3 +46,14 @@ jobs:
         run: |
           nix eval \
             .#nixosConfigurations.citest.config.system.build.vm.drvPath
+
+  iso-eval:
+    name: Evaluate the installer ISO
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Evaluate the ISO image derivation
+        run: |
+          nix eval \
+            .#nixosConfigurations.space-elevator-iso.config.system.build.isoImage.drvPath

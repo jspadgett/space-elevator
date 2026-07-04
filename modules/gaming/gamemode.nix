@@ -9,5 +9,8 @@
       inhibit_screensaver = 1;
     };
   };
+  # renice only works for members of the gamemode group
+  users.users."@USERNAME@".extraGroups = [ "gamemode" ];
+
   environment.systemPackages = with pkgs; [ mangohud ];
 }

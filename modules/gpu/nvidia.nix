@@ -1,8 +1,13 @@
 # modules/features/nvidia.nix
 # NVIDIA proprietary driver (Turing or newer recommended).
 # For laptops with hybrid graphics, add PRIME offload config per the NixOS wiki.
-{ config, ... }:
+{ config, pkgs, ... }:
 {
+  # Stability: the newest mainline kernel periodically outruns NVIDIA
+  # driver support, which breaks `nix flake update`. The default kernel
+  # is always a driver-supported pairing. (Overrides base's mkDefault.)
+  boot.kernelPackages = pkgs.linuxPackages;
+
   hardware.graphics = {
     enable = true;
     enable32Bit = true;
