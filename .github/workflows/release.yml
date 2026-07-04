@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: # manual test builds — uploads the ISO as an artifact
+
+permissions:
+  contents: write # needed to attach files to the release
+
+jobs:
+  iso:
+    name: Build and publish the installer ISO
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The ISO build needs more disk than a stock runner has free;
+      # drop the preinstalled toolchains we don't use (~25 GB back).
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
+            /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build the ISO
+        run: |
+          nix build .#nixosConfigurations.space-elevator-iso.config.system.build.isoImage
+          mkdir -p dist
+          cp result/iso/*.iso dist/
+          cd dist && sha256sum *.iso > SHA256SUMS
+          ls -lh
+
+      # Manual runs: keep the ISO as a downloadable workflow artifact
+      - name: Upload build artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: space-elevator-iso
+          path: dist/*
+          retention-days: 7
+
+      # Tag pushes: attach the ISO to the GitHub release for that tag
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.iso
+            dist/SHA256SUMS
+          generate_release_notes: true
