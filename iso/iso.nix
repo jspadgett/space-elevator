@@ -6,7 +6,8 @@
   imports = [ "${modulesPath}/installer/cd-dvd/installation-cd-minimal.nix" ];
 
   # ── Branding ──────────────────────────────────────────────────────
-  isoImage.isoBaseName = "space-elevator";
+  # mkForce: the installer base sets the image name at normal priority
+  isoImage.isoBaseName = lib.mkForce "space-elevator-26.05-x86_64";
   isoImage.volumeID = "SPACE_ELEVATOR";
   # zstd builds much faster than the default xz at a modest size cost;
   # the minimal base leaves plenty of headroom under GitHub's 2 GiB
@@ -32,7 +33,7 @@
   # NetworkManager (nmtui is a menu) instead of the minimal ISO's
   # default wpa_supplicant (which is config files).
   networking.networkmanager.enable = true;
-  networking.wireless.enable = false;
+  networking.wireless.enable = lib.mkForce false; # base hard-enables wpa_supplicant
 
   # ── Greeting on the auto-logged-in console ────────────────────────
   services.getty.helpLine = lib.mkAfter ''
