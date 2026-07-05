@@ -6,7 +6,7 @@
   imports = [ "${modulesPath}/installer/cd-dvd/installation-cd-minimal.nix" ];
 
   # ── Branding ──────────────────────────────────────────────────────
-  isoImage.isoBaseName = lib.mkForce "space-elevator-26.05-x86_64";
+  isoImage.isoBaseName = "space-elevator";
   isoImage.volumeID = "SPACE_ELEVATOR";
   # zstd builds much faster than the default xz at a modest size cost;
   # the minimal base leaves plenty of headroom under GitHub's 2 GiB
@@ -26,12 +26,13 @@
   # Flakes on by default: the wizard, nixos-install --flake, and the
   # generated config all work with no --experimental-features flags.
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  nix.settings.download-attempts = 5; # be stubborn about flaky networks
 
   # ── Friendly networking ───────────────────────────────────────────
   # NetworkManager (nmtui is a menu) instead of the minimal ISO's
   # default wpa_supplicant (which is config files).
   networking.networkmanager.enable = true;
-  networking.wireless.enable = lib.mkForce false;
+  networking.wireless.enable = false;
 
   # ── Greeting on the auto-logged-in console ────────────────────────
   services.getty.helpLine = lib.mkAfter ''

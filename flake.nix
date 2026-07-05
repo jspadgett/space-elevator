@@ -17,6 +17,7 @@
           excludeShellChecks = [ "SC2016" ];
           text = ''
             MODULE_SOURCE="${./modules}"
+            SE_NIXPKGS_REV="${nixpkgs.rev or ""}"
             ${builtins.readFile ./scaffold.sh}
           '';
         };

@@ -10,6 +10,7 @@
 # MODULE_SOURCE is injected by flake.nix; the fallback covers standalone dev runs.
 set -euo pipefail
 MODULE_SOURCE="${MODULE_SOURCE:-$(cd "$(dirname "$0")" && pwd)/modules}"
+SE_NIXPKGS_REV="${SE_NIXPKGS_REV:-}"
 NONINT="${SE_NONINTERACTIVE:-0}"
 
 # In non-interactive environments without gum (CI), shim `gum style` to echo.
@@ -747,6 +748,18 @@ gum style \
   "" \
   "Install on real hardware:" \
   "$INSTALL_HINT"
+
+if [ "$INSTALL_MODE" = true ] && command -v nix >/dev/null 2>&1; then
+  note "Preparing the package index (downloads the nixpkgs snapshot)..."
+  LOCK_ARGS=()
+  [ -n "$SE_NIXPKGS_REV" ] && LOCK_ARGS=(--override-input nixpkgs "github:NixOS/nixpkgs/$SE_NIXPKGS_REV")
+  lock_flake() { (cd "$OUTDIR" && nix flake lock "${LOCK_ARGS[@]}"); }
+  if ! lock_flake; then
+    note "Download hiccup — clearing the fetch cache and retrying..."
+    rm -rf "$HOME/.cache/nix"
+    lock_flake
+  fi
+fi
 
 if prompt_confirm "Initialize a git repository in $OUTDIR now? (flakes require tracked files)" y; then
   git -C "$OUTDIR" init -q
