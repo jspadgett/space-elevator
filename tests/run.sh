@@ -16,14 +16,20 @@ for de in "KDE Plasma" "GNOME" "COSMIC" "Hyprland"; do
 
   for f in flake.nix flake/hosts.nix update.sh README.md \
            hosts/citest/citest.nix hosts/citest/configuration.nix \
-           hosts/citest/hardware-configuration.nix; do
+           hosts/citest/settings.nix \
+           hosts/citest/hardware-configuration.nix \
+           modules/common/options.nix; do
     [ -f "$out/$f" ] || { echo "FAIL ($de): missing $f"; fail=1; }
   done
   [ -x "$out/update.sh" ] || { echo "FAIL ($de): update.sh not executable"; fail=1; }
   grep -q 'nixos-26.05' "$out/flake.nix" || { echo "FAIL ($de): wrong nixpkgs pin"; fail=1; }
   grep -q 'catppuccin' "$out/flake.nix" || { echo "FAIL ($de): theming flavor missing input"; fail=1; }
-  grep -q 'en_US.UTF-8' "$out/modules/common/base-locale.nix" || { echo "FAIL ($de): locale not substituted"; fail=1; }
-  grep -qE '@(USERNAME|LOCALE|KB_LAYOUT)@' -r "$out/modules" && { echo "FAIL ($de): unsubstituted placeholder"; fail=1; }
+  # Wizard answers flow through the spaceElevator.* options: they must
+  # land in settings.nix, and copied modules must never carry placeholders.
+  grep -q 'locale = "en_US.UTF-8"' "$out/hosts/citest/settings.nix" || { echo "FAIL ($de): locale missing from settings.nix"; fail=1; }
+  grep -q 'user.name = "ci"' "$out/hosts/citest/settings.nix" || { echo "FAIL ($de): username missing from settings.nix"; fail=1; }
+  grep -q 'settings.nix' "$out/hosts/citest/citest.nix" || { echo "FAIL ($de): settings.nix not imported"; fail=1; }
+  grep -qE '@(USERNAME|LOCALE|KB_LAYOUT)@' -r "$out/modules" && { echo "FAIL ($de): placeholder found in generated modules"; fail=1; }
   grep -q 'steam.nix' "$out/hosts/citest/citest.nix" || { echo "FAIL ($de): gaming flavor missing"; fail=1; }
   [ -d "$out/.git" ] || { echo "FAIL ($de): git repo not initialized"; fail=1; }
   echo "OK: $de"
