@@ -1,6 +1,6 @@
-# modules/features/gamemode.nix
+# modules/gaming/gamemode.nix
 # Feral GameMode + MangoHud overlay
-{ pkgs, ... }:
+{ config, pkgs, ... }:
 {
   programs.gamemode = {
     enable = true;
@@ -10,7 +10,7 @@
     };
   };
   # renice only works for members of the gamemode group
-  users.users."@USERNAME@".extraGroups = [ "gamemode" ];
+  users.users.${config.spaceElevator.user.name}.extraGroups = [ "gamemode" ];
 
   environment.systemPackages = with pkgs; [ mangohud ];
 }
