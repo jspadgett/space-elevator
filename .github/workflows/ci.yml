@@ -11,12 +11,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install shellcheck
-        run: sudo apt-get update -q && sudo apt-get install -y shellcheck
+      - uses: DeterminateSystems/nix-installer-action@main
+      # shellcheck from nixpkgs, not apt: the versions disagree about
+      # which code an indirectly-invoked function gets flagged under,
+      # and a lint that passes locally should pass here.
+      #
       # SC2016: single-quoted $ in generated Nix and shell snippets.
-      # SC2329: test helpers are called indirectly, through `check`.
+      # SC2317/SC2329: test helpers are called indirectly, via `check`.
       - name: Lint scripts
-        run: shellcheck -S info -e SC2016,SC2329 scaffold.sh tests/run.sh
+        run: |
+          nix run nixpkgs#shellcheck -- -S info -e SC2016,SC2317,SC2329 \
+            scaffold.sh upgrade.sh tests/run.sh
       - name: Generate configs for every desktop, GPU and flavor
         run: bash tests/run.sh
 
