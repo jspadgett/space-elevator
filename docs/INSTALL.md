@@ -181,6 +181,12 @@ nixos-rebuild build-vm --flake .#YOURHOSTNAME
 A window opens with your complete desktop running inside it. Like it?
 The same config installs for real.
 
+## Already running a Space Elevator system?
+
+Nothing expires — your config is self-contained, and `./update.sh`
+keeps it current. To move an existing machine onto newer Space
+Elevator modules, see [Upgrading an existing system](./UPGRADING.md).
+
 ## Getting help
 
 - [NixOS Discourse](https://discourse.nixos.org/) — friendly forum

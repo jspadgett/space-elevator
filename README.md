@@ -17,6 +17,9 @@ nix run github:jspadgett/space-elevator
 **New to NixOS?** The [complete beginner's guide](./docs/INSTALL.md)
 takes you from blank USB stick to working desktop.
 
+**Already running one?** [Upgrading an existing system](./docs/UPGRADING.md)
+moves a machine onto the current modules, step by step.
+
 ## What you get without asking
 
 Like any good desktop distro, the baseline just works. Every generated config includes:
