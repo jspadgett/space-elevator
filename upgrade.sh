@@ -120,6 +120,14 @@ OLD_CONFIGURATION="$HOST_DIR/configuration.nix"
 OLD_HARDWARE="$HOST_DIR/hardware-configuration.nix"
 [ -f "$OLD_CONFIGURATION" ] || die "Expected $OLD_CONFIGURATION to exist."
 
+# The current layout keeps this machine's choices in a switches file
+# next to its configuration. That file is authoritative: its tree is
+# carried across and only the module set is replaced. The older
+# layouts have nowhere to read choices from, so they are regenerated
+# from what detection can find.
+CURRENT_LAYOUT=0
+[ -f "$HOST_DIR/space-elevator.nix" ] && CURRENT_LAYOUT=1
+
 # Everything the old config says about itself, in one haystack. This
 # reads both layouts: the old one imported module files, the current
 # one sets options, and the greps below look for either.
@@ -222,11 +230,11 @@ fi
 
 # Detection greps text, so it only knows the spellings we thought of —
 # a formatter that breaks `= {` onto its own line is enough to miss.
-# A bus ID naming an NVIDIA card for offload is the durable signal:
-# take it as proof the driver belongs, however the enabling attribute
-# is laid out. Without this the summary could print the contradiction
-# "GPU None / VM (PRIME offload)" and ship a config with no driver.
-if [ "$PRIME" = 1 ] && [ "$GPU" != "NVIDIA" ]; then
+# A bus ID naming an NVIDIA card for offload is proof the driver
+# belongs, however the enabling attribute is laid out. Only the
+# regenerated layouts need it; the current layout carries its own
+# switches across.
+if [ "$CURRENT_LAYOUT" = 0 ] && [ "$PRIME" = 1 ] && [ "$GPU" != "NVIDIA" ]; then
   GPU="NVIDIA"
 fi
 
@@ -237,22 +245,36 @@ PASSWORD_LINE="$(grep -oE '(hashedPassword|initialPassword) = "[^"]*";' "$OLD_CO
 
 header "Upgrading $HOSTNAME"
 
-gum style --padding "0 2" \
-  "Reading    $CONFIG_DIR" \
-  "Building   $OUTPUT_DIR" \
-  "" \
-  "host            $HOSTNAME" \
-  "user            $USERNAME" \
-  "desktop         $DE" \
-  "GPU             $GPU$( [ "$PRIME" = 1 ] && echo "  (PRIME offload)" )" \
-  "timezone        ${TIMEZONE:-detected}" \
-  "locale          $LOCALE, keyboard $KB_LAYOUT" \
-  "laptop power    $( [ "$TLP" = 1 ] && echo "TLP" || echo "no" )" \
-  "extras          ${FLAVORS:-none}" \
-  "stateVersion    ${STATE_VERSION:-NOT FOUND}" \
-  "password        $( [ -n "$PASSWORD_LINE" ] && echo "carried over" || echo "unchanged" )"
+if [ "$CURRENT_LAYOUT" = 1 ]; then
+  gum style --padding "0 2" \
+    "Reading    $CONFIG_DIR" \
+    "Building   $OUTPUT_DIR" \
+    "" \
+    "host            $HOSTNAME" \
+    "configuration   carried across unchanged" \
+    "module set      replaced with this release" \
+    "stateVersion    ${STATE_VERSION:-as written in your config}" \
+    "password        as written in your config"
+else
+  gum style --padding "0 2" \
+    "Reading    $CONFIG_DIR" \
+    "Building   $OUTPUT_DIR" \
+    "" \
+    "host            $HOSTNAME" \
+    "user            $USERNAME" \
+    "desktop         $DE" \
+    "GPU             $GPU$( [ "$PRIME" = 1 ] && echo "  (PRIME offload)" )" \
+    "timezone        ${TIMEZONE:-detected}" \
+    "locale          $LOCALE, keyboard $KB_LAYOUT" \
+    "laptop power    $( [ "$TLP" = 1 ] && echo "TLP" || echo "no" )" \
+    "extras          ${FLAVORS:-none}" \
+    "stateVersion    ${STATE_VERSION:-NOT FOUND}" \
+    "password        $( [ -n "$PASSWORD_LINE" ] && echo "carried over" || echo "unchanged" )"
+fi
 
-if [ -z "$STATE_VERSION" ]; then
+# Only the regenerated layouts write a stateVersion; the current
+# layout keeps whatever its own configuration.nix declares.
+if [ "$CURRENT_LAYOUT" = 0 ] && [ -z "$STATE_VERSION" ]; then
   note "No system.stateVersion found in the old config. That value must not change, so I can't safely continue."
   die "Set it in $OLD_CONFIGURATION, or upgrade by hand: docs/UPGRADING.md"
 fi
@@ -268,6 +290,11 @@ if [ -e "$OUTPUT_DIR" ]; then
   rm -rf "${OUTPUT_DIR:?}"
 fi
 
+# The scaffold always writes to a temp directory. On the current
+# layout that tree is the reference for the review diff and the source
+# of the replaced module set; on the older layouts it is the output.
+REFERENCE_DIR="$(mktemp -d)/reference"
+
 SE_NONINTERACTIVE=1 \
 SE_HOSTNAME="$HOSTNAME" \
 SE_USERNAME="$USERNAME" \
@@ -279,13 +306,48 @@ SE_DE="$DE" \
 SE_TLP="$TLP" \
 SE_PRIME="$PRIME" \
 SE_FLAVORS="$FLAVORS" \
-SE_OUTDIR="$OUTPUT_DIR" \
+SE_OUTDIR="$REFERENCE_DIR" \
   "${SCAFFOLD[@]}" >/dev/null
+
+# What Space Elevator ships and therefore owns. Everything else in the
+# tree belongs to whoever wrote it.
+SE_OWNED=(
+  modules/apps
+  modules/common
+  modules/desktop
+  modules/development
+  modules/gaming
+  modules/gpu
+  modules/network
+  modules/tuning
+  modules/default.nix
+  README.md
+  update.sh
+)
+
+if [ "$CURRENT_LAYOUT" = 1 ]; then
+  mkdir -p "$(dirname "$OUTPUT_DIR")"
+  cp -a "$CONFIG_DIR" "$OUTPUT_DIR"
+  for owned in "${SE_OWNED[@]}"; do
+    rm -rf "${OUTPUT_DIR:?}/$owned"
+    if [ -e "$REFERENCE_DIR/$owned" ]; then
+      mkdir -p "$(dirname "$OUTPUT_DIR/$owned")"
+      cp -a "$REFERENCE_DIR/$owned" "$OUTPUT_DIR/$owned"
+    fi
+  done
+else
+  mkdir -p "$(dirname "$OUTPUT_DIR")"
+  mv "$REFERENCE_DIR" "$OUTPUT_DIR"
+fi
 
 NEW_HOST_DIR="$OUTPUT_DIR/hosts/$HOSTNAME"
 NEW_CONFIGURATION="$NEW_HOST_DIR/configuration.nix"
 
 # ── Carry across what the wizard couldn't know ──────────────────────
+#
+# Steps 2 to 4 rebuild the host files from detection, so they apply
+# only to the regenerated layouts. The current layout already has the
+# user's own copies of all three.
 
 # 1. The hardware configuration, as it is. Regenerating it would lose
 #    anything you hand-edited (LUKS devices, btrfs subvolume options),
@@ -310,10 +372,12 @@ fi
 # 2. stateVersion. Records the release this machine was installed
 #    with; some services read it to decide on-disk formats, so it must
 #    survive every upgrade.
-sed -i "s|system.stateVersion = \"[^\"]*\"|system.stateVersion = \"$STATE_VERSION\"|" "$NEW_CONFIGURATION"
+if [ "$CURRENT_LAYOUT" = 0 ]; then
+  sed -i "s|system.stateVersion = \"[^\"]*\"|system.stateVersion = \"$STATE_VERSION\"|" "$NEW_CONFIGURATION"
+fi
 
 # 3. The declared password, so nobody is locked out by a rebuild.
-if [ -n "$PASSWORD_LINE" ]; then
+if [ "$CURRENT_LAYOUT" = 0 ] && [ -n "$PASSWORD_LINE" ]; then
   ESCAPED="${PASSWORD_LINE//\\/\\\\}"
   ESCAPED="${ESCAPED//|/\\|}"
   sed -i -E "s|(hashedPassword\|initialPassword) = \"[^\"]*\";.*|$ESCAPED|" "$NEW_CONFIGURATION"
@@ -322,7 +386,7 @@ fi
 # 4. Anything of yours the wizard doesn't write. Too varied to merge
 #    safely, so it gets reported rather than guessed at.
 CUSTOM_MODULES=()
-if [ -d "$CONFIG_DIR/modules" ]; then
+if [ "$CURRENT_LAYOUT" = 0 ] && [ -d "$CONFIG_DIR/modules" ]; then
   while IFS= read -r f; do
     rel="${f#"$CONFIG_DIR"/modules/}"
     [ -e "$OUTPUT_DIR/modules/$rel" ] || CUSTOM_MODULES+=("$rel")
@@ -330,53 +394,114 @@ if [ -d "$CONFIG_DIR/modules" ]; then
 fi
 
 DIFF_FILE="$OUTPUT_DIR/UPGRADE-REVIEW.diff"
-diff -u "$OLD_CONFIGURATION" "$NEW_CONFIGURATION" > "$DIFF_FILE" 2>/dev/null || true
+if [ "$CURRENT_LAYOUT" = 1 ]; then
+  # Your files against the ones the wizard would have written. This is
+  # where a change to the templates or the module set shows up.
+  {
+    for rel in \
+      "hosts/$HOSTNAME/configuration.nix" \
+      "hosts/$HOSTNAME/space-elevator.nix" \
+      "hosts/$HOSTNAME/$HOSTNAME.nix"
+    do
+      echo "── $rel — yours, then this release ──"
+      diff -u "$CONFIG_DIR/$rel" "$REFERENCE_DIR/$rel" || true
+      echo
+    done
+    echo "── modules/ — yours, then this release ──"
+    diff -ru "$CONFIG_DIR/modules" "$REFERENCE_DIR/modules" || true
+  } > "$DIFF_FILE" 2>/dev/null
+else
+  diff -u "$OLD_CONFIGURATION" "$NEW_CONFIGURATION" > "$DIFF_FILE" 2>/dev/null || true
+fi
+
+OTHER_HOSTS=()
+for h in "${HOSTS[@]}"; do
+  [ "$h" = "$HOSTNAME" ] || OTHER_HOSTS+=("$h")
+done
 
 {
   echo "# Upgrade review — $HOSTNAME"
   echo
   echo "Generated $STAMP by \`space-elevator#upgrade\`, from $CONFIG_DIR."
   echo
-  echo "## Carried across for you"
-  echo
-  echo "- hardware-configuration.nix — $HARDWARE_NOTE"
-  echo "- system.stateVersion — kept at \"$STATE_VERSION\""
-  if [ -n "$PASSWORD_LINE" ]; then
-    echo "- the declared password line, so your login is unchanged"
-  fi
-  echo "- desktop ($DE), GPU ($GPU), extras (${FLAVORS:-none})"
-  if [ "$PRIME" = 1 ]; then
-    echo "- PRIME offload, with bus IDs re-read from this machine — worth"
-    echo "  checking them against \`lspci | grep -E 'VGA|3D'\`"
-  fi
-  echo
-  echo "## Worth your eyes"
-  echo
-  echo "\`UPGRADE-REVIEW.diff\` is your old configuration.nix against the"
-  echo "new one. Anything you added by hand — extra packages, extra users,"
-  echo "services, boot tweaks — shows up there as a removal, and needs"
-  echo "copying into hosts/$HOSTNAME/configuration.nix."
-  echo
-  echo "Firewall ports have moved: \`networking.firewall.allowedTCPPorts\`"
-  echo "is now \`spaceElevator.network.firewall.allowedTCPPorts\`, set in"
-  echo "hosts/$HOSTNAME/space-elevator.nix."
-  if [ "${#CUSTOM_MODULES[@]}" -gt 0 ]; then
+  if [ "$CURRENT_LAYOUT" = 1 ]; then
+    echo "## Carried across unchanged"
     echo
-    echo "## Your own modules"
+    echo "Your configuration reached the new directory as it was:"
+    echo "hosts/, flake.nix, flake.lock, the git history and anything"
+    echo "else you keep there. Your switches in"
+    echo "hosts/$HOSTNAME/space-elevator.nix are exactly as you left them."
     echo
-    echo "These were in the old modules/ and are not part of the Space"
-    echo "Elevator set, so they were not copied. Bring them over and add"
-    echo "them to the modules list in hosts/$HOSTNAME/$HOSTNAME.nix:"
+    echo "Replaced with this release:"
     echo
-    printf -- "- %s\n" "${CUSTOM_MODULES[@]}"
+    echo "- modules/ — the eight Space Elevator categories and default.nix"
+    echo "- README.md and update.sh"
+    echo
+    echo "Anything else under modules/ is yours and was left alone."
+    echo
+    echo "## Worth your eyes"
+    echo
+    echo "\`UPGRADE-REVIEW.diff\` sets each of your host files against what"
+    echo "the wizard writes today, then your old modules/ against the new"
+    echo "one. None of it has been applied — it is there so you can pick"
+    echo "up anything you want."
+    echo
+    echo "Because your flake.lock carried over, the inputs are still"
+    echo "pinned where they were. Run \`./update.sh\` when you want to move"
+    echo "them."
+  else
+    echo "## Carried across for you"
+    echo
+    echo "- hardware-configuration.nix — $HARDWARE_NOTE"
+    echo "- system.stateVersion — kept at \"$STATE_VERSION\""
+    if [ -n "$PASSWORD_LINE" ]; then
+      echo "- the declared password line, so your login is unchanged"
+    fi
+    echo "- desktop ($DE), GPU ($GPU), extras (${FLAVORS:-none})"
+    if [ "$PRIME" = 1 ]; then
+      echo "- PRIME offload, with bus IDs re-read from this machine — worth"
+      echo "  checking them against \`lspci | grep -E 'VGA|3D'\`"
+    fi
+    echo
+    echo "## Not carried across"
+    echo
+    echo "- flake.lock — the inputs resolve fresh, so this upgrade moves"
+    echo "  them. Your old lock is in the backup beside this directory."
+    echo "- the git history — the new tree starts its own; yours stays"
+    echo "  with the backup."
+    if [ "${#OTHER_HOSTS[@]}" -gt 0 ]; then
+      echo "- the other hosts here (${OTHER_HOSTS[*]}). Upgrade each of them"
+      echo "  on its own with \`--config\`."
+    fi
+    echo
+    echo "## Worth your eyes"
+    echo
+    echo "\`UPGRADE-REVIEW.diff\` is your old configuration.nix against the"
+    echo "new one. Anything you added by hand — extra packages, extra users,"
+    echo "services, boot tweaks — shows up there as a removal, and needs"
+    echo "copying into hosts/$HOSTNAME/configuration.nix."
+    echo
+    echo "Firewall ports have moved: \`networking.firewall.allowedTCPPorts\`"
+    echo "is now \`spaceElevator.network.firewall.allowedTCPPorts\`, set in"
+    echo "hosts/$HOSTNAME/space-elevator.nix."
+    if [ "${#CUSTOM_MODULES[@]}" -gt 0 ]; then
+      echo
+      echo "## Your own modules"
+      echo
+      echo "These were in the old modules/ and are not part of the Space"
+      echo "Elevator set, so they were not copied. Bring them over and add"
+      echo "them to the modules list in hosts/$HOSTNAME/$HOSTNAME.nix:"
+      echo
+      printf -- "- %s\n" "${CUSTOM_MODULES[@]}"
+    fi
+    echo
+    echo "## What is on now that wasn't before"
+    echo
+    echo "Steam with Proton-GE, gamescope and protontricks; Heroic, Lutris"
+    echo "and ProtonUp-Qt; GameMode and MangoHud; controller support;"
+    echo "Firefox; Vesktop; Catppuccin theming. Each is one line to remove"
+    echo "in hosts/$HOSTNAME/space-elevator.nix."
   fi
-  echo
-  echo "## What is on now that wasn't before"
-  echo
-  echo "Steam with Proton-GE, gamescope and protontricks; Heroic, Lutris"
-  echo "and ProtonUp-Qt; GameMode and MangoHud; controller support;"
-  echo "Firefox; Vesktop; Catppuccin theming. Each is one line to remove"
-  echo "in hosts/$HOSTNAME/space-elevator.nix."
 } > "$OUTPUT_DIR/UPGRADE-NOTES.md"
 
 git -C "$OUTPUT_DIR" add -A 2>/dev/null || true
