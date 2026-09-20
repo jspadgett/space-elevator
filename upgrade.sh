@@ -140,7 +140,10 @@ extract() {
 }
 
 # Was this feature on, in either layout?
-had() { printf '%s' "$HAYSTACK" | grep -qE "$1"; }
+# A here-string rather than `printf | grep`: grep -q exits at the
+# first match, and under `set -o pipefail` a SIGPIPE'd printf turns a
+# successful match into a non-zero return — a silent false negative.
+had() { grep -qE "$1" <<<"$HAYSTACK"; }
 
 STATE_VERSION="$(extract 'system\.stateVersion = "([^"]+)"' "$HAYSTACK")"
 TIMEZONE="$(extract 'time\.timeZone = "([^"]+)"' "$HAYSTACK")"
@@ -183,10 +186,16 @@ for de in plasma gnome cosmic hyprland; do
 done
 [ -n "$DE" ] || DE="KDE Plasma"
 
+# Either `gpu.<vendor>.enable = true;` or the block form
+# `gpu.<vendor> = {`, which is what the wizard writes for a PRIME
+# laptop — the block form used to be unmatchable, so hybrid machines
+# upgraded to a config with no driver at all.
+gpu_on() { had "gpu\.$1(\.enable[[:space:]]*=[[:space:]]*true|[[:space:]]*=[[:space:]]*\{)"; }
+
 GPU="None / VM"
-if   had "modules/gpu/nvidia\.nix|gpu\.nvidia\.(enable[[:space:]]*=[[:space:]]*true|= \{)"; then GPU="NVIDIA"
-elif had "modules/gpu/amdgpu\.nix|gpu\.amd\.enable[[:space:]]*=[[:space:]]*true";           then GPU="AMD"
-elif had "modules/gpu/intel-gpu\.nix|gpu\.intel\.enable[[:space:]]*=[[:space:]]*true";      then GPU="Intel"
+if   had "modules/gpu/nvidia\.nix"    || gpu_on nvidia; then GPU="NVIDIA"
+elif had "modules/gpu/amdgpu\.nix"    || gpu_on amd;    then GPU="AMD"
+elif had "modules/gpu/intel-gpu\.nix" || gpu_on intel;  then GPU="Intel"
 fi
 
 TLP=0
@@ -205,9 +214,20 @@ fi
 # anchor the match, so the option's own declaration and examples in
 # the current module don't count.
 PRIME=0
-if printf '%s\n%s' "$HAYSTACK" "$(uncommented "$CONFIG_DIR"/modules/gpu/nvidia.nix 2>/dev/null || true)" \
-    | grep -qE '^[[:space:]]*nvidiaBusId[[:space:]]*=[[:space:]]*"PCI:'; then
+PRIME_HAYSTACK="$HAYSTACK
+$(uncommented "$CONFIG_DIR"/modules/gpu/nvidia.nix 2>/dev/null || true)"
+if grep -qE '^[[:space:]]*nvidiaBusId[[:space:]]*=[[:space:]]*"PCI:' <<<"$PRIME_HAYSTACK"; then
   PRIME=1
+fi
+
+# Detection greps text, so it only knows the spellings we thought of —
+# a formatter that breaks `= {` onto its own line is enough to miss.
+# A bus ID naming an NVIDIA card for offload is the durable signal:
+# take it as proof the driver belongs, however the enabling attribute
+# is laid out. Without this the summary could print the contradiction
+# "GPU None / VM (PRIME offload)" and ship a config with no driver.
+if [ "$PRIME" = 1 ] && [ "$GPU" != "NVIDIA" ]; then
+  GPU="NVIDIA"
 fi
 
 # The declared password, so the upgrade doesn't silently change it.
