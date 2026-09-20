@@ -145,7 +145,7 @@ had() { printf '%s' "$HAYSTACK" | grep -qE "$1"; }
 STATE_VERSION="$(extract 'system\.stateVersion = "([^"]+)"' "$HAYSTACK")"
 TIMEZONE="$(extract 'time\.timeZone = "([^"]+)"' "$HAYSTACK")"
 USERNAME="$(extract 'users\.users\.([A-Za-z0-9_-]+) = \{' "$HAYSTACK")"
-[ -n "$USERNAME" ] || USERNAME="$(extract 'user = "([^"]+)"' "$HAYSTACK")"
+[ -n "$USERNAME" ] || USERNAME="$(extract 'user\.name = "([^"]+)"' "$HAYSTACK")"
 [ -n "$USERNAME" ] || USERNAME="${SUDO_USER:-$USER}"
 
 # Locale and keyboard: a module in the old layout, the switches file
@@ -155,13 +155,18 @@ USERNAME="$(extract 'users\.users\.([A-Za-z0-9_-]+) = \{' "$HAYSTACK")"
 LOCALE_HAYSTACK="$HAYSTACK
 $(uncommented "$CONFIG_DIR"/modules/common/*.nix 2>/dev/null || true)"
 
+# Three spellings have shipped: the module carried the value directly
+# (oldest), then settings.nix had a bare `locale`, and now it is
+# `locale.defaultLocale`. Try them newest first.
 LOCALE="$(extract 'defaultLocale = "([^"]+)"' "$LOCALE_HAYSTACK")"
+[ -n "$LOCALE" ] || LOCALE="$(extract 'locale = "([^"]+)"' "$LOCALE_HAYSTACK")"
 [ -n "$LOCALE" ] || LOCALE="${LANG%%:*}"
 [ -n "$LOCALE" ] || LOCALE="en_US.UTF-8"
 
-# xkb.layout in the old layout, keyboardLayout in the current one.
-KB_LAYOUT="$(extract 'xkb\.layout = "([^"]+)"' "$LOCALE_HAYSTACK")"
-[ -n "$KB_LAYOUT" ] || KB_LAYOUT="$(extract 'keyboardLayout = "([^"]+)"' "$LOCALE_HAYSTACK")"
+# Likewise: xkb.layout, then keyboard.layout, now keyboardLayout.
+KB_LAYOUT="$(extract 'keyboardLayout = "([^"]+)"' "$LOCALE_HAYSTACK")"
+[ -n "$KB_LAYOUT" ] || KB_LAYOUT="$(extract 'keyboard\.layout = "([^"]+)"' "$LOCALE_HAYSTACK")"
+[ -n "$KB_LAYOUT" ] || KB_LAYOUT="$(extract 'xkb\.layout = "([^"]+)"' "$LOCALE_HAYSTACK")"
 [ -n "$KB_LAYOUT" ] || KB_LAYOUT="us"
 
 DE=""

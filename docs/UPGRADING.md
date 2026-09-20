@@ -190,9 +190,22 @@ lists what's available as commented lines.
 
 Old import lines translate like this:
 
+If your config has a `hosts/<name>/settings.nix` with three
+`spaceElevator` options in it, those move too, and change spelling:
+
+| settings.nix had | Now, in space-elevator.nix |
+|---|---|
+| `user.name = "alice";` | unchanged |
+| `locale = "en_US.UTF-8";` | `locale.defaultLocale = "en_US.UTF-8";` |
+| `keyboard.layout = "us";` | `locale.keyboardLayout = "us";` |
+
+The nesting is so every feature can carry an `enable` — including
+locale, if you'd rather set `i18n` yourself. The upgrade script
+translates all three for you.
+
 | You used to import | Now |
 |---|---|
-| `common/base.nix`, `common/base-locale.nix` | automatic; `locale.*` holds the values |
+| `common/base.nix`, `common/base-locale.nix`, `common/options.nix` | automatic; `locale.*` holds the values |
 | `desktop/audio`, `bluetooth`, `printing`, `nerdfonts`, `desktop-packages`, `tuning/gvfs` | automatic with any desktop |
 | `network/*`, `tuning/nix-gc`, `nix-tools`, `zram`, `earlyoom`, `apps/flatpak` | automatic |
 | `desktop/plasma.nix` etc. | `desktop.plasma.enable = true;` |

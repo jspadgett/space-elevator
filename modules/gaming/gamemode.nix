@@ -3,7 +3,7 @@
 { config, lib, pkgs, ... }:
 let
   cfg = config.spaceElevator.gaming.gamemode;
-  user = config.spaceElevator.user;
+  user = config.spaceElevator.user.name;
 in
 {
   options.spaceElevator.gaming.gamemode = {
@@ -46,9 +46,9 @@ in
     };
 
     warnings = lib.optional (user == null) ''
-      spaceElevator.gaming.gamemode is enabled but spaceElevator.user is
+      spaceElevator.gaming.gamemode is enabled but spaceElevator.user.name is
       unset, so no account was added to the "gamemode" group — GameMode
-      will not be able to renice games. Set spaceElevator.user, or add
+      will not be able to renice games. Set spaceElevator.user.name, or add
       the group by hand.
     '';
 

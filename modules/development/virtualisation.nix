@@ -3,7 +3,7 @@
 { config, lib, ... }:
 let
   cfg = config.spaceElevator.development.virtualisation;
-  user = config.spaceElevator.user;
+  user = config.spaceElevator.user.name;
 in
 {
   options.spaceElevator.development.virtualisation = {
@@ -18,9 +18,9 @@ in
       type = lib.types.bool;
       default = true;
       description = ''
-        Put spaceElevator.user in the "libvirtd" group, so virt-manager
+        Put spaceElevator.user.name in the "libvirtd" group, so virt-manager
         can talk to the system daemon without a password prompt every
-        time. No effect when spaceElevator.user is unset.
+        time. No effect when spaceElevator.user.name is unset.
       '';
     };
   };

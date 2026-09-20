@@ -122,7 +122,7 @@ let
   desktop = de: {
     spaceElevator = {
       enable = true;
-      user = "alice";
+      user.name = "alice";
       desktop.${de}.enable = true;
     };
     users.users.alice.isNormalUser = true;
@@ -199,7 +199,7 @@ in
   gamescope-session-adds-a-login-option = evalCheck "gamescope-session-adds-a-login-option" {
     spaceElevator = {
       enable = true;
-      user = "alice";
+      user.name = "alice";
       desktop.plasma.enable = true;
       gaming.steam.gamescopeSession = true;
     };
@@ -214,7 +214,7 @@ in
   gaming-extras = evalCheck "gaming-extras" {
     spaceElevator = {
       enable = true;
-      user = "alice";
+      user.name = "alice";
       desktop.gnome.enable = true;
       gaming = {
         streaming.enable = true;
@@ -531,7 +531,7 @@ in
   flavor-gaming = evalCheck "flavor-gaming" {
     spaceElevator = {
       enable = true;
-      user = "alice";
+      user.name = "alice";
       gaming.enable = true;
     };
     users.users.alice.isNormalUser = true;
@@ -542,7 +542,7 @@ in
       {
         spaceElevator = {
           enable = true;
-          user = "alice";
+          user.name = "alice";
           gaming.enable = true;
           gaming.gamemode.enable = false;
         };
@@ -556,18 +556,18 @@ in
       {
         spaceElevator = {
           enable = true;
-          user = "alice";
+          user.name = "alice";
           gaming.enable = true;
         };
         users.users.alice.isNormalUser = true;
       }
-      "spaceElevator.user lands in the gamemode group"
+      "spaceElevator.user.name lands in the gamemode group"
       (c: lib.elem "gamemode" c.users.users.alice.extraGroups);
 
   flavor-development = evalCheck "flavor-development" {
     spaceElevator = {
       enable = true;
-      user = "alice";
+      user.name = "alice";
       development.enable = true;
     };
     users.users.alice.isNormalUser = true;
@@ -578,7 +578,7 @@ in
       {
         spaceElevator = {
           enable = true;
-          user = "alice";
+          user.name = "alice";
           development.enable = true;
         };
         users.users.alice.isNormalUser = true;
@@ -666,7 +666,7 @@ in
   everything = evalCheck "everything" {
     spaceElevator = {
       enable = true;
-      user = "alice";
+      user.name = "alice";
       desktop.plasma.enable = true;
       desktop.kdeconnect.enable = true;
       gpu.nvidia = {

@@ -41,7 +41,7 @@
       '';
     };
 
-    user = lib.mkOption {
+    user.name = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
       example = "alice";

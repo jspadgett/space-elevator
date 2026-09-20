@@ -414,7 +414,10 @@ esac
 # the generated config.
 FLAVOR_TOKENS=""
 if [ "$NONINT" = 1 ]; then
-  FLAVOR_TOKENS="${SE_FLAVORS//,/ }"
+  # Two steps, not one: under `set -u` a substitution on an unset
+  # SE_FLAVORS aborts the script.
+  FLAVOR_TOKENS="${SE_FLAVORS:-}"
+  FLAVOR_TOKENS="${FLAVOR_TOKENS//,/ }"
 else
   header "Flavors"
   note "Steam, GameMode and Catppuccin theming are included as standard."
@@ -677,7 +680,7 @@ EOF
 {
   spaceElevator = {
     enable = true;
-    user = "$USERNAME";
+    user.name = "$USERNAME";
 
     locale = {
       defaultLocale = "$LOCALE";

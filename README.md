@@ -76,7 +76,7 @@ Set `SE_NONINTERACTIVE=1` plus any `SE_*` variables (see the header of `scaffold
 ```nix
 spaceElevator = {
   enable = true;
-  user = "alice";
+  user.name = "alice";
 
   desktop.plasma.enable = true;      # switch desktops by changing this line
   desktop.theming.flavor = "latte";  # theming is on; this picks the shade
@@ -139,7 +139,7 @@ Adding a module takes two steps:
 1. Drop a `.nix` file into the appropriate `modules/` category, declaring `options.spaceElevator.<category>.<name>.enable` and wrapping its config in `lib.mkIf`.
 2. Add it to that category's `default.nix` imports.
 
-The option path mirrors the directory layout. A feature that should follow its category's rollup takes `default = config.spaceElevator.<category>.enable;`. Modules that need the primary user's name read `config.spaceElevator.user`.
+The option path mirrors the directory layout. A feature that should follow its category's rollup takes `default = config.spaceElevator.<category>.enable;`. Modules that need the primary user's name read `config.spaceElevator.user.name`.
 
 New modules should come with a test in `tests/checks.nix` — an `evalCheck` at minimum, and an `expect` if the feature has behavior worth pinning down.
 

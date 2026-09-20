@@ -75,7 +75,7 @@ for de in "KDE Plasma" "GNOME" "COSMIC" "Hyprland"; do
   # Answers became options
   check "$de" "wrong nixpkgs pin" has_line "$out/flake.nix" "nixos-26.05"
   check "$de" "master switch missing" has_line "$se" "enable = true;"
-  check "$de" "user not set" has_line "$se" 'user = "ci";'
+  check "$de" "user not set" has_line "$se" 'user.name = "ci";'
   check "$de" "locale not set" has_line "$se" 'defaultLocale = "en_US.UTF-8";'
   check "$de" "keyboard layout not set" has_line "$se" 'keyboardLayout = "us";'
   check "$de" "desktop not enabled" has_line "$se" "desktop.$attr.enable = true;"
@@ -233,7 +233,7 @@ check upgrade "desktop was not detected" is_enabled "$se" 'desktop\.plasma\.enab
 check upgrade "GPU was not detected" grep -qE '^\s+gpu\.nvidia' "$se"
 check upgrade "development flavor was not detected" is_enabled "$se" 'development\.enable'
 check upgrade "TLP was not detected" is_enabled "$se" 'tuning\.tlp\.enable'
-check upgrade "username was not detected" has_line "$se" 'user = "dana";'
+check upgrade "username was not detected" has_line "$se" 'user.name = "dana";'
 check upgrade "timezone was not carried over" has_line "$cfg" 'time.timeZone = "Europe/Berlin";'
 check upgrade "locale was not carried over" has_line "$se" 'defaultLocale = "de_DE.UTF-8";'
 check upgrade "keyboard layout was not carried over" has_line "$se" 'keyboardLayout = "de";'
@@ -242,6 +242,34 @@ check upgrade "custom module not reported" has_line "$new/UPGRADE-NOTES.md" "loc
 check upgrade "review diff missing" test -f "$new/UPGRADE-REVIEW.diff"
 check upgrade "old config was modified" has_line "$old/hosts/oldbox/configuration.nix" 'stateVersion = "24.11"'
 echo "OK: upgrade from the old layout"
+
+# The layout that shipped between the two: a settings.nix holding
+# three spaceElevator options, with the modules still imported one by
+# one. Different spellings — `locale` as a bare string,
+# `keyboard.layout` — so the detection has to know all of them.
+mid=$(mktemp -d)/mid
+old_style_config "$mid" gnome intel-gpu
+cat > "$mid/hosts/oldbox/settings.nix" <<'NIX'
+{
+  spaceElevator = {
+    user.name = "dana";
+    locale = "fr_FR.UTF-8";
+    keyboard.layout = "fr";
+  };
+}
+NIX
+rm -f "$mid/modules/common/base-locale.nix"
+mid2=$(mktemp -d)/mid2
+SCAFFOLD_BIN="" bash upgrade.sh --config "$mid" --output "$mid2" --yes --no-build >/dev/null
+ms="$mid2/hosts/oldbox/space-elevator.nix"
+check upgrade-mid "username lost from settings.nix" has_line "$ms" 'user.name = "dana";'
+check upgrade-mid "bare locale string not understood" has_line "$ms" 'defaultLocale = "fr_FR.UTF-8";'
+check upgrade-mid "keyboard.layout not understood" has_line "$ms" 'keyboardLayout = "fr";'
+check upgrade-mid "desktop lost" is_enabled "$ms" 'desktop\.gnome\.enable'
+check upgrade-mid "GPU lost" is_enabled "$ms" 'gpu\.intel\.enable'
+check upgrade-mid "stateVersion lost" \
+  has_line "$mid2/hosts/oldbox/configuration.nix" 'system.stateVersion = "24.11";'
+echo "OK: upgrade from the settings.nix layout"
 
 # The same script has to handle a config it generated itself — this is
 # how someone upgrades a second time.
