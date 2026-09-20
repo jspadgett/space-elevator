@@ -1,48 +1,67 @@
 # modules/desktop/hyprland.nix
-# Hyprland Wayland compositor with greetd/tuigreet login
-{ pkgs, ... }:
+# Hyprland Wayland compositor — the flavor: compositor, greeter, bar,
+# launcher, notifications, screenshots and a polkit agent, i.e. the
+# pieces a full desktop environment would have given you.
+{ config, lib, pkgs, ... }:
+let
+  cfg = config.spaceElevator.desktop.hyprland;
+in
 {
-  programs.hyprland = {
-    enable = true;
-    xwayland.enable = true;
+  options.spaceElevator.desktop.hyprland.enable = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    example = true;
+    description = ''
+      Hyprland with greetd/tuigreet, Waybar, wofi, dunst, screenshot
+      tools, a file manager and a polkit agent. Enabling any desktop
+      also turns on the shared desktop plumbing (see
+      spaceElevator.desktop.enable).
+    '';
   };
 
-  services.greetd = {
-    enable = true;
-    settings.default_session = {
-      command = "${pkgs.greetd.tuigreet}/bin/tuigreet --time --cmd Hyprland";
-      user = "greeter";
+  config = lib.mkIf cfg.enable {
+    programs.hyprland = {
+      enable = true;
+      xwayland.enable = true;
     };
-  };
 
-  xdg.portal = {
-    enable = true;
-    extraPortals = [ pkgs.xdg-desktop-portal-gtk ];
-  };
+    services.greetd = {
+      enable = true;
+      settings.default_session = {
+        command = "${pkgs.tuigreet}/bin/tuigreet --time --cmd Hyprland";
+        user = "greeter";
+      };
+    };
 
-  environment.systemPackages = with pkgs; [
-    waybar
-    wofi
-    dunst
-    hyprpaper
-    hyprlock
-    hypridle
-    grim
-    slurp
-    wl-clipboard
-    nautilus         # file manager (Plasma/GNOME/COSMIC get theirs from the DE)
-    hyprpolkitagent  # GUI auth prompts (needed for disk formatting etc.)
-  ];
+    xdg.portal = {
+      enable = true;
+      extraPortals = [ pkgs.xdg-desktop-portal-gtk ];
+    };
 
-  # Start the polkit agent with the session so privileged GUI actions
-  # (formatting drives, GParted, etc.) can prompt for authentication.
-  systemd.user.services.hyprpolkitagent = {
-    description = "Hyprland polkit authentication agent";
-    wantedBy = [ "graphical-session.target" ];
-    after = [ "graphical-session.target" ];
-    serviceConfig = {
-      ExecStart = "${pkgs.hyprpolkitagent}/libexec/hyprpolkitagent";
-      Restart = "on-failure";
+    environment.systemPackages = with pkgs; [
+      waybar
+      wofi
+      dunst
+      hyprpaper
+      hyprlock
+      hypridle
+      grim
+      slurp
+      wl-clipboard
+      nautilus         # file manager (Plasma/GNOME/COSMIC get theirs from the DE)
+      hyprpolkitagent  # GUI auth prompts (needed for disk formatting etc.)
+    ];
+
+    # Start the polkit agent with the session so privileged GUI actions
+    # (formatting drives, GParted, etc.) can prompt for authentication.
+    systemd.user.services.hyprpolkitagent = {
+      description = "Hyprland polkit authentication agent";
+      wantedBy = [ "graphical-session.target" ];
+      after = [ "graphical-session.target" ];
+      serviceConfig = {
+        ExecStart = "${pkgs.hyprpolkitagent}/libexec/hyprpolkitagent";
+        Restart = "on-failure";
+      };
     };
   };
 }

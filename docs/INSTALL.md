@@ -99,7 +99,9 @@ Answer the questions. Two matter specially here:
   Say **yes**. This captures your real disk layout automatically.
 
 Everything else is normal: pick a hostname, username, password, desktop,
-and any flavors. Say yes to the git question at the end.
+and any optional flavors. Steam, GameMode, Firefox and the Catppuccin
+theme come as standard — no question asked, and each is one line to
+remove later. Say yes to the git question at the end.
 
 ## Step 5 — Install
 
@@ -157,9 +159,12 @@ sudo nixos-rebuild switch --flake .#YOURHOSTNAME
 
 Search package names at [search.nixos.org](https://search.nixos.org/packages).
 
-**Removing a feature:** delete its import line from
-`hosts/YOURHOSTNAME/YOURHOSTNAME.nix` and rebuild. Every feature is one
-line.
+**Turning features on and off:** open
+`hosts/YOURHOSTNAME/space-elevator.nix`. Every feature is one line —
+`gaming.enable = true;`, `desktop.bluetooth.enable = false;` — and the
+commented-out lines in that file show you what else is available.
+Change a line, rebuild, done. Nothing needs downloading: every module
+is already in your `modules/` directory, just switched off.
 
 ## Already running Linux? Try it in a VM first
 
@@ -175,6 +180,21 @@ nixos-rebuild build-vm --flake .#YOURHOSTNAME
 
 A window opens with your complete desktop running inside it. Like it?
 The same config installs for real.
+
+## Already running a Space Elevator system?
+
+Nothing expires — your config is self-contained, and `./update.sh`
+keeps it current. To move an existing machine onto newer Space
+Elevator modules:
+
+```
+nix run github:jspadgett/space-elevator#upgrade
+```
+
+It carries your hardware config, password and settings across, builds
+before it switches, and leaves your old config in place. The full
+story, including how to do it by hand, is in
+[Upgrading an existing system](./UPGRADING.md).
 
 ## Getting help
 
