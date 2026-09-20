@@ -294,6 +294,63 @@ check upgrade-again "a commented suggestion enabled a flavor" \
   is_not_enabled "$re" 'development\.enable'
 echo "OK: upgrade from the current layout"
 
+# ── A hybrid laptop keeps its dGPU ──────────────────────────────────
+# PRIME is the one answer the wizard writes as a block — `gpu.nvidia =
+# { prime = { ... }; }` rather than a flat `enable = true;`. Detection
+# has to read that form back. When it doesn't, the upgrade ships a
+# config with no driver at all, and UPGRADE-REVIEW.diff only covers
+# configuration.nix, so nothing says so.
+#
+# Bus IDs have to be detectable for the PRIME path to run at all, so
+# the wizard and the upgrade both get a fake hybrid lspci.
+fakebin=$(mktemp -d)
+cat > "$fakebin/lspci" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"::0300"*) printf '00:02.0 "VGA compatible controller" "Intel Corporation" "UHD Graphics" -r04 "Dell" "Device 0c3d"\n01:00.0 "VGA compatible controller" "NVIDIA Corporation" "AD107M [GeForce RTX 4060 Mobile]" -ra1 "Dell" "Device 0c3d"\n' ;;
+esac
+EOF
+chmod +x "$fakebin/lspci"
+
+prime=$(mktemp -d)/prime
+PATH="$fakebin:$PATH" SE_GPU=NVIDIA SE_PRIME=1 SE_DE="KDE Plasma" \
+  SE_OUTDIR="$prime" MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null
+primed=$(mktemp -d)/primed
+PATH="$fakebin:$PATH" SCAFFOLD_BIN="" \
+  bash upgrade.sh --config "$prime" --output "$primed" --yes --no-build >/dev/null
+pse="$primed/hosts/citest/space-elevator.nix"
+check upgrade-prime "the NVIDIA driver was dropped" \
+  grep -qE '^[[:space:]]+gpu\.nvidia[[:space:]]*=[[:space:]]*\{' "$pse"
+check upgrade-prime "PRIME offload was dropped" \
+  grep -qE '^[[:space:]]+prime[[:space:]]*=[[:space:]]*\{' "$pse"
+check upgrade-prime "the iGPU bus ID was lost" has_line "$pse" 'intelBusId = "PCI:0:2:0";'
+check upgrade-prime "the NVIDIA bus ID was lost" has_line "$pse" 'nvidiaBusId = "PCI:1:0:0";'
+echo "OK: upgrade keeps PRIME offload"
+
+# ── ... even when the switch is written a way we didn't predict ─────
+# Detection greps text, so it can only ever know the spellings we
+# thought of. A formatter that breaks `= {` onto its own line is
+# enough to miss — and nixfmt does exactly that on long attrsets.
+# Bus IDs are the durable signal: if the old config names an NVIDIA
+# card for offload, the driver has to come across regardless of how
+# the enabling attribute happens to be laid out.
+odd=$(mktemp -d)/odd
+PATH="$fakebin:$PATH" SE_GPU=NVIDIA SE_PRIME=1 SE_DE="KDE Plasma" \
+  SE_OUTDIR="$odd" MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null
+sed -i -E 's/^([[:space:]]*)gpu\.nvidia = \{$/\1gpu.nvidia =\n\1{/' \
+  "$odd/hosts/citest/space-elevator.nix"
+check upgrade-prime-odd "fixture did not reach the unrecognised layout" \
+  grep -qE '^[[:space:]]+gpu\.nvidia[[:space:]]*=[[:space:]]*$' \
+  "$odd/hosts/citest/space-elevator.nix"
+odded=$(mktemp -d)/odded
+PATH="$fakebin:$PATH" SCAFFOLD_BIN="" \
+  bash upgrade.sh --config "$odd" --output "$odded" --yes --no-build >/dev/null
+ose="$odded/hosts/citest/space-elevator.nix"
+check upgrade-prime-odd "bus IDs were present but the driver was dropped" \
+  grep -qE '^[[:space:]]+gpu\.nvidia[[:space:]]*=[[:space:]]*\{' "$ose"
+check upgrade-prime-odd "the NVIDIA bus ID was lost" has_line "$ose" 'nvidiaBusId = "PCI:1:0:0";'
+echo "OK: PRIME bus IDs imply the NVIDIA driver"
+
 # Same trap, from the other direction: a machine with no GPU module
 # and no flavors must come back with no GPU module and no flavors.
 bare=$(mktemp -d)/bare
