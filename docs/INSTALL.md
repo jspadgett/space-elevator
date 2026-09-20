@@ -99,7 +99,9 @@ Answer the questions. Two matter specially here:
   Say **yes**. This captures your real disk layout automatically.
 
 Everything else is normal: pick a hostname, username, password, desktop,
-and any flavors. Say yes to the git question at the end.
+and any optional flavors. Steam, GameMode, Firefox and the Catppuccin
+theme come as standard — no question asked, and each is one line to
+remove later. Say yes to the git question at the end.
 
 ## Step 5 — Install
 
@@ -157,9 +159,12 @@ sudo nixos-rebuild switch --flake .#YOURHOSTNAME
 
 Search package names at [search.nixos.org](https://search.nixos.org/packages).
 
-**Removing a feature:** delete its import line from
-`hosts/YOURHOSTNAME/YOURHOSTNAME.nix` and rebuild. Every feature is one
-line.
+**Turning features on and off:** open
+`hosts/YOURHOSTNAME/space-elevator.nix`. Every feature is one line —
+`gaming.enable = true;`, `desktop.bluetooth.enable = false;` — and the
+commented-out lines in that file show you what else is available.
+Change a line, rebuild, done. Nothing needs downloading: every module
+is already in your `modules/` directory, just switched off.
 
 ## Already running Linux? Try it in a VM first
 

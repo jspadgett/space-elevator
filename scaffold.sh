@@ -6,6 +6,10 @@
 #   SE_HOSTNAME SE_USERNAME SE_PASSWORD SE_TIMEZONE SE_LOCALE SE_KEYMAP
 #   SE_OUTDIR SE_GPU (AMD|Intel|NVIDIA|None) SE_DE ("KDE Plasma"|GNOME|COSMIC|Hyprland)
 #   SE_FLAVORS (comma list of: gaming,development,theming,kdeconnect)
+#   SE_PRIME=0 to decline PRIME offload on a detected hybrid laptop
+#
+# The generated config vendors the whole module set and switches
+# features on through options in hosts/<name>/space-elevator.nix.
 #
 # MODULE_SOURCE is injected by flake.nix; the fallback covers standalone dev runs.
 set -euo pipefail
@@ -275,16 +279,44 @@ STATE_VERSION="26.05" # matches the pinned nixpkgs release below
 
 [ "$NONINT" != 1 ] && header "Hardware"
 
-GPU_DETECTED=""
+# lspci prints hex slots ("01:00.0"); the NixOS PRIME options want
+# decimal ("PCI:1:0:0").
+pci_to_nix() {
+  local slot="$1" bus rest dev fn
+  case "$slot" in *:*:*) slot="${slot#*:}" ;; esac # drop a PCI domain
+  bus="${slot%%:*}"
+  rest="${slot#*:}"
+  dev="${rest%%.*}"
+  fn="${rest#*.}"
+  printf 'PCI:%d:%d:%d\n' "0x$bus" "0x$dev" "0x$fn"
+}
+
+# Display controllers: VGA (0300), 3D (0302), display (0380). `lspci
+# -mm` quotes its fields, so splitting on the quote gives slot in the
+# first field and vendor in the fourth.
+NVIDIA_BUSID=""
+INTEL_BUSID=""
+AMD_BUSID=""
 if command -v lspci >/dev/null 2>&1; then
-  # VGA (0300), 3D (0302), and display (0380) controllers
-  PCI=$( { lspci -mm -d ::0300; lspci -mm -d ::0302; lspci -mm -d ::0380; } 2>/dev/null || true)
-  # Check discrete vendors before Intel so hybrid laptops surface the dGPU
-  case "$PCI" in
-    *NVIDIA*)                           GPU_DETECTED="NVIDIA" ;;
-    *"Advanced Micro"* | *AMD* | *ATI*) GPU_DETECTED="AMD" ;;
-    *Intel*)                            GPU_DETECTED="Intel" ;;
-  esac
+  while read -r slot vendor; do
+    [ -n "$slot" ] || continue
+    case "$vendor" in
+      NVIDIA*)
+        [ -n "$NVIDIA_BUSID" ] || NVIDIA_BUSID=$(pci_to_nix "$slot") ;;
+      Intel*)
+        [ -n "$INTEL_BUSID" ] || INTEL_BUSID=$(pci_to_nix "$slot") ;;
+      "Advanced Micro"* | AMD* | ATI*)
+        [ -n "$AMD_BUSID" ] || AMD_BUSID=$(pci_to_nix "$slot") ;;
+    esac
+  done < <( { lspci -mm -d ::0300; lspci -mm -d ::0302; lspci -mm -d ::0380; } 2>/dev/null \
+            | awk -F'"' '{ print $1 " " $4 }' )
+fi
+
+# Check discrete vendors before Intel so hybrid laptops surface the dGPU
+GPU_DETECTED=""
+if   [ -n "$NVIDIA_BUSID" ]; then GPU_DETECTED="NVIDIA"
+elif [ -n "$AMD_BUSID" ];    then GPU_DETECTED="AMD"
+elif [ -n "$INTEL_BUSID" ];  then GPU_DETECTED="Intel"
 fi
 
 GPU=""
@@ -299,8 +331,11 @@ else
   fi
 fi
 
+IS_LAPTOP=false
+compgen -G "/sys/class/power_supply/BAT*" >/dev/null && IS_LAPTOP=true
+
 USE_TLP=false
-if compgen -G "/sys/class/power_supply/BAT*" >/dev/null; then
+if [ "$IS_LAPTOP" = true ]; then
   if [ "$NONINT" = 1 ]; then
     USE_TLP=true
   else
@@ -313,6 +348,27 @@ if [ "$INSTALL_MODE" = false ] && [ "$NONINT" != 1 ] \
     && command -v nixos-generate-config >/dev/null 2>&1; then
   if gum confirm "Capture THIS machine's hardware config (disks, filesystems)? Choose No if this config is for a different machine."; then
     CAPTURE_HW=true
+  fi
+fi
+
+# Hybrid graphics: the iGPU drives the panel, the NVIDIA card renders
+# on demand. The bus IDs below describe *this* machine, so only offer
+# it when this machine is the target — and only on a laptop, since a
+# desktop's monitor is normally wired to the discrete card.
+IGPU_BUSID=""
+IGPU_ATTR=""
+if   [ -n "$INTEL_BUSID" ]; then IGPU_BUSID="$INTEL_BUSID"; IGPU_ATTR="intelBusId"
+elif [ -n "$AMD_BUSID" ];    then IGPU_BUSID="$AMD_BUSID";  IGPU_ATTR="amdgpuBusId"
+fi
+
+USE_PRIME=false
+if [ "$GPU" = "NVIDIA" ] && [ "$CAPTURE_HW" = true ] && [ "$IS_LAPTOP" = true ] \
+    && [ -n "$IGPU_BUSID" ] && [ -n "$NVIDIA_BUSID" ]; then
+  if [ "$NONINT" = 1 ]; then
+    [ "${SE_PRIME:-1}" = 1 ] && USE_PRIME=true
+  else
+    gum confirm "Hybrid graphics detected (integrated $IGPU_BUSID + NVIDIA $NVIDIA_BUSID) — set up PRIME offload? (recommended on laptops: the dGPU powers down when idle)" \
+      && USE_PRIME=true
   fi
 fi
 
@@ -332,76 +388,48 @@ fi
 
 # ── Flavors ─────────────────────────────────────────────────────────
 
+case "$DE" in
+  "KDE Plasma"*) DE_ATTR="plasma" ;;
+  "GNOME"*)      DE_ATTR="gnome" ;;
+  "COSMIC"*)     DE_ATTR="cosmic" ;;
+  "Hyprland"*)   DE_ATTR="hyprland" ;;
+  *)             die "Unknown desktop environment: $DE" ;;
+esac
+
+# Gaming and Catppuccin theming are not questions: this is a gaming
+# distro, and it has a look. Both are still one line to switch off in
+# the generated config.
 FLAVOR_TOKENS=""
 if [ "$NONINT" = 1 ]; then
   FLAVOR_TOKENS="${SE_FLAVORS//,/ }"
 else
   header "Flavors"
+  note "Steam, GameMode and Catppuccin theming are included as standard."
+  FLAVOR_CHOICES=("development (Docker + libvirt)")
+  # KDE Connect comes with the Plasma flavor; asking again would be
+  # asking the same question twice.
+  [ "$DE_ATTR" != plasma ] && FLAVOR_CHOICES+=("kdeconnect (phone integration)")
+
   SELECTED=$(pick_many "Optional flavors (space to select, enter to confirm):" \
-    "gaming (Steam + gamemode)" \
-    "development (Docker + libvirt)" \
-    "theming (Catppuccin)" \
-    "kdeconnect (phone integration)")
-  has "$SELECTED" "gaming (Steam + gamemode)"      && FLAVOR_TOKENS="$FLAVOR_TOKENS gaming"
+    "${FLAVOR_CHOICES[@]}")
   has "$SELECTED" "development (Docker + libvirt)" && FLAVOR_TOKENS="$FLAVOR_TOKENS development"
-  has "$SELECTED" "theming (Catppuccin)"           && FLAVOR_TOKENS="$FLAVOR_TOKENS theming"
   has "$SELECTED" "kdeconnect (phone integration)" && FLAVOR_TOKENS="$FLAVOR_TOKENS kdeconnect"
 fi
 want() { case " $FLAVOR_TOKENS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
-# ── Build module list ───────────────────────────────────────────────
-# The baseline is unconditional: this is the "distro" layer every
-# generated desktop gets. Everything below it is driven by answers.
+# Theming ships with every generated desktop, so its flake input and
+# module always go in.
+USE_CATPPUCCIN=true
 
-MODULES=(
-  common/base.nix
-  common/base-locale.nix
-  desktop/audio.nix
-  desktop/bluetooth.nix
-  desktop/printing.nix
-  desktop/nerdfonts.nix
-  desktop/desktop-packages.nix
-  network/networkmanager.nix
-  network/firewall.nix
-  apps/flatpak.nix
-  tuning/nix-gc.nix
-  tuning/nix-tools.nix
-  tuning/zram.nix
-  tuning/gvfs.nix
-  tuning/earlyoom.nix
-)
-
-case "$GPU" in
-  AMD)    MODULES+=("gpu/amdgpu.nix") ;;
-  Intel)  MODULES+=("gpu/intel-gpu.nix") ;;
-  NVIDIA) MODULES+=("gpu/nvidia.nix") ;;
-esac
-
-case "$DE" in
-  "KDE Plasma"*) MODULES+=("desktop/plasma.nix") ;;
-  "GNOME"*)      MODULES+=("desktop/gnome.nix") ;;
-  "COSMIC"*)     MODULES+=("desktop/cosmic.nix") ;;
-  "Hyprland"*)   MODULES+=("desktop/hyprland.nix") ;;
-  *)             die "Unknown desktop environment: $DE" ;;
-esac
-
-[ "$USE_TLP" = true ] && MODULES+=("tuning/tlp.nix")
-
-USE_CATPPUCCIN=false
-want gaming      && MODULES+=("gaming/steam.nix" "gaming/gamemode.nix")
-want development && MODULES+=("apps/docker.nix" "apps/virtualisation.nix")
-want kdeconnect  && MODULES+=("desktop/kdeconnect.nix")
-if want theming; then
-  MODULES+=("desktop/theming.nix")
-  USE_CATPPUCCIN=true
-fi
-
-# ── Pre-flight: verify all selected modules exist ───────────────────
+# ── Pre-flight: the module set must be intact ───────────────────────
+# The whole tree gets vendored, so a missing category is a broken
+# import rather than a missing feature — catch it before writing.
 
 MISSING=()
-for m in "${MODULES[@]}"; do
-  [ -f "$MODULE_SOURCE/$m" ] || MISSING+=("$m")
+for d in common desktop network apps gaming development gpu tuning; do
+  [ -f "$MODULE_SOURCE/$d/default.nix" ] || MISSING+=("$d/default.nix")
 done
+[ -f "$MODULE_SOURCE/default.nix" ] || MISSING+=("default.nix")
 if [ "${#MISSING[@]}" -gt 0 ]; then
   gum style --foreground 1 "Missing from module source (did you 'git add' new files?):"
   printf '  %s\n' "${MISSING[@]}"
@@ -463,25 +491,12 @@ if ! mkdir -p "$OUTDIR" 2>/dev/null; then
 fi
 mkdir -p "$OUTDIR/flake" "$OUTDIR/hosts/$HOSTNAME" "$OUTDIR/modules"
 
-# Copy selected modules
-for m in "${MODULES[@]}"; do
-  dest="$OUTDIR/modules/$m"
-  mkdir -p "$(dirname "$dest")"
-  cp "$MODULE_SOURCE/$m" "$dest"
-  chmod u+w "$dest"
-done
-
-# Remove any category directories that ended up empty
-find "$OUTDIR/modules" -type d -empty -delete
-
-# Substitute placeholders in any module that carries them
-{ grep -rlE '@(USERNAME|LOCALE|KB_LAYOUT)@' "$OUTDIR/modules" 2>/dev/null || true; } | while read -r f; do
-  sed -i \
-    -e "s|@USERNAME@|$USERNAME|g" \
-    -e "s|@LOCALE@|$LOCALE|g" \
-    -e "s|@KB_LAYOUT@|$KB_LAYOUT|g" \
-    "$f"
-done
+# Vendor the complete module set. Everything is imported; nothing is
+# switched on until space-elevator.nix says so — which means turning on
+# a feature later never requires fetching anything.
+rm -rf "${OUTDIR:?}/modules"
+cp -R "$MODULE_SOURCE" "$OUTDIR/modules"
+chmod -R u+w "$OUTDIR/modules"
 
 # ── flake.nix ───────────────────────────────────────────────────────
 
@@ -534,21 +549,248 @@ EOF
     specialArgs = { inherit inputs; };
     modules = [
 
+      # ── Features ────────────────────────────────────────
+      # The module set declares every feature as an option and
+      # turns none of them on by itself; space-elevator.nix is
+      # where this machine picks.
+      ../../modules
+      ./space-elevator.nix
+EOF
+  if [ "$USE_CATPPUCCIN" = true ]; then
+    cat <<EOF
+
+      # Theming lives in its own flake; this is the one feature
+      # that needs a module from outside modules/.
+      inputs.catppuccin.nixosModules.catppuccin
+EOF
+  fi
+  cat <<EOF
+
       # ── Host ────────────────────────────────────────────
       ./configuration.nix
-
-      # ── Modules ─────────────────────────────────────────
-EOF
-  for m in "${MODULES[@]}"; do
-    printf '      ../../modules/%s\n' "$m"
-  done
-  cat <<EOF
 
     ];
   };
 }
 EOF
 } > "$OUTDIR/hosts/$HOSTNAME/$HOSTNAME.nix"
+
+# ── hosts/<name>/space-elevator.nix ─────────────────────────────────
+# The answers, as options. Commented-out lines are deliberate: they
+# show what else is available without making anyone read the source.
+
+# Desktop environments: the chosen one on, the rest as comments.
+de_lines() {
+  local de
+  for de in plasma gnome cosmic hyprland; do
+    if [ "$de" = "$DE_ATTR" ]; then
+      printf '    desktop.%s.enable = true;\n' "$de"
+    else
+      printf '    # desktop.%s.enable = true;\n' "$de"
+    fi
+  done
+}
+
+gpu_lines() {
+  case "$GPU" in
+    AMD)
+      printf '    gpu.amd.enable = true;\n'
+      ;;
+    Intel)
+      printf '    gpu.intel.enable = true;\n'
+      ;;
+    NVIDIA)
+      if [ "$USE_PRIME" = true ]; then
+        cat <<EOF
+    gpu.nvidia = {
+      enable = true;
+
+      # Hybrid graphics, detected on this machine: the integrated GPU
+      # drives the panel and the NVIDIA card renders on demand, then
+      # powers down. Run a program on the dGPU with:
+      #   nvidia-offload <command>
+      prime = {
+        enable = true;
+        $IGPU_ATTR = "$IGPU_BUSID";
+        nvidiaBusId = "$NVIDIA_BUSID";
+      };
+
+      # Pre-Turing card (GTX 10xx / 9xx)? The current driver dropped
+      # support for those: set driver = "legacy_580"; and remove the
+      # prime block's power savings by adding
+      # powerManagement.finegrained = false;
+    };
+EOF
+      else
+        cat <<'EOF'
+    gpu.nvidia.enable = true;
+    # Hybrid laptop (integrated GPU + NVIDIA)? Uncomment and fill in
+    # the bus IDs from `lspci | grep -E 'VGA|3D'`, converted to
+    # decimal — 01:00.0 becomes "PCI:1:0:0":
+    #   gpu.nvidia.prime = {
+    #     enable = true;
+    #     intelBusId  = "PCI:0:2:0";   # or amdgpuBusId on an AMD iGPU
+    #     nvidiaBusId = "PCI:1:0:0";
+    #   };
+    # Pre-Turing card (GTX 10xx / 9xx)?
+    #   gpu.nvidia.driver = "legacy_580";
+EOF
+      fi
+      ;;
+    *)
+      printf '    # No GPU driver selected — the kernel'\''s built-in\n'
+      printf '    # drivers handle VMs and basic display output.\n'
+      printf '    # gpu.amd.enable = true;\n'
+      printf '    # gpu.intel.enable = true;\n'
+      printf '    # gpu.nvidia.enable = true;\n'
+      ;;
+  esac
+}
+
+{
+  cat <<EOF
+# hosts/$HOSTNAME/space-elevator.nix
+#
+# The feature switches for this machine.
+#
+# Every module in ../../modules is already imported — these options
+# decide which ones do anything. Turning a feature on is one line here
+# plus a rebuild; nothing gets downloaded from Space Elevator, because
+# the modules are already sitting in this repository.
+#
+# Each option carries a description in its module, and the commented
+# lines below are a tour of what else is on offer.
+{ ... }:
+{
+  spaceElevator = {
+    enable = true;
+    user = "$USERNAME";
+
+    locale = {
+      defaultLocale = "$LOCALE";
+      keyboardLayout = "$KB_LAYOUT";
+    };
+
+    # ── Desktop ─────────────────────────────────────────────
+    # One at a time. Switching is: change the line, rebuild, log
+    # out and back in. The shared plumbing — audio, Bluetooth,
+    # printing, fonts, removable media, the common app set —
+    # follows whichever one you pick.
+EOF
+  de_lines
+  echo
+  cat <<'EOF'
+    # Catppuccin, system-wide — standard on every Space Elevator
+    # desktop. Flavors: latte (light), frappe, macchiato, mocha
+    # (darkest). Accents: mauve, blue, teal, peach, red and more.
+    desktop.theming = {
+      enable = true;
+      flavor = "mocha";
+      accent = "mauve";
+    };
+
+    # Firefox comes with the common app set. Prefer a different
+    # browser? Turn it off and install yours in configuration.nix:
+    #   desktop.packages.firefox = false;
+EOF
+  echo
+  if want kdeconnect; then
+    printf '    desktop.kdeconnect.enable = true;\n'
+  elif [ "$DE_ATTR" = plasma ]; then
+    printf '    # KDE Connect comes with Plasma; switch it off with:\n'
+    printf '    # desktop.kdeconnect.enable = false;\n'
+  else
+    printf '    # Phone integration (notifications, file transfer):\n'
+    printf '    # desktop.kdeconnect.enable = true;\n'
+  fi
+
+  cat <<EOF
+
+    # ── Hardware ────────────────────────────────────────────
+EOF
+  gpu_lines
+  echo
+  if [ "$USE_TLP" = true ]; then
+    cat <<'EOF'
+    # Laptop power management. It replaces the desktop's own power
+    # profile switcher, and holds the battery between 40% and 80%
+    # to spare it — set chargeThresholds = null; to charge fully.
+    tuning.tlp.enable = true;
+EOF
+  else
+    cat <<'EOF'
+    # Laptop power management (conflicts with the desktop's own
+    # power profile switcher, so it is off on desktops):
+    # tuning.tlp.enable = true;
+EOF
+  fi
+
+  if [ "$GPU" = NVIDIA ]; then
+    cat <<'EOF'
+
+    # Kernel. "default" here because the NVIDIA driver asks for it:
+    # mainline periodically outruns driver support and the build
+    # breaks. "latest", "zen" or "xanmod" override that — zen and
+    # xanmod are tuned for desktop latency, and you will be warned
+    # that the pairing is the fragile one.
+    #   base.kernel = "zen";
+EOF
+  else
+    cat <<'EOF'
+
+    # Kernel: "latest" (the default), "default" (the release's own,
+    # oldest and steadiest), or "zen" / "xanmod" — mainline patched
+    # for desktop latency under load, which is what you feel in a
+    # game while something else is running.
+    #   base.kernel = "zen";
+EOF
+  fi
+
+  cat <<'EOF'
+
+    # ── Gaming ──────────────────────────────────────────────
+    # Standard equipment: Steam (Proton-GE, gamescope, protontricks),
+    # GameMode, MangoHud with GOverlay, the non-Steam launchers
+    # (Heroic, Lutris, ProtonUp-Qt), controller drivers for Xbox,
+    # PlayStation, Switch and 8BitDo pads, and the kernel tunables
+    # games need.
+    # Not a gaming machine after all? gaming.enable = false;
+    gaming.enable = true;
+
+    # There when you want them:
+    #   gaming.steam.gamescopeSession = true;  # SteamOS-style Big Picture session at login
+    #   gaming.streaming.enable = true;        # Sunshine — stream to a Moonlight client
+    #   gaming.rgb.enable = true;              # OpenRGB lighting control
+    #   gaming.controllers.mice = true;        # Piper, for configuring gaming mice
+    #
+    # Individual pieces, if you want some but not all:
+    #   gaming.steam.protonGE = false;
+    #   gaming.steam.openFirewall = false;     # no Remote Play
+    #   gaming.gamemode.mangohud = false;
+    #   gaming.launchers.lutris = false;
+
+    # ── Flavors ─────────────────────────────────────────────
+EOF
+  if want development; then
+    printf '    development.enable = true;   # Docker + libvirt/virt-manager\n'
+  else
+    printf '    # development.enable = true;   # Docker + libvirt/virt-manager\n'
+  fi
+
+  cat <<'EOF'
+
+    # ── Housekeeping ────────────────────────────────────────
+    # On by default: zram swap, earlyoom, weekly garbage
+    # collection, Nix tooling (nh, nvd, nix-tree). Turn one off
+    # individually, or the lot of them with tuning.enable = false;
+    #
+    #   tuning.nixGc.keepDays = 30;
+    #   tuning.zram.memoryPercent = 25;
+    #   network.firewall.allowedTCPPorts = [ 8080 ];
+  };
+}
+EOF
+} > "$OUTDIR/hosts/$HOSTNAME/space-elevator.nix"
 
 # ── hosts/<name>/configuration.nix ──────────────────────────────────
 
@@ -649,10 +891,48 @@ Generated by space-elevator. Structure:
 
 - flake.nix — inputs and flake-parts entry
 - flake/hosts.nix — registers each host
-- hosts/@HOSTNAME@/ — per-machine config
-- modules/ — feature modules (importing a file enables it; delete the
-  import line in hosts/@HOSTNAME@/@HOSTNAME@.nix to disable one)
+- hosts/@HOSTNAME@/space-elevator.nix — **the feature switches for this
+  machine**: what's on, what's available, all in one file
+- hosts/@HOSTNAME@/configuration.nix — user, bootloader, packages
+- modules/ — every feature, as options. All of them are imported;
+  space-elevator.nix decides which ones do anything
 - update.sh — update everything and switch
+
+## What's already on
+
+**Gaming** — Steam (Proton-GE, gamescope, protontricks), Heroic, Lutris
+and ProtonUp-Qt for the games that aren't on Steam, GameMode, MangoHud
+with GOverlay, and controller support for Xbox, PlayStation, Switch and
+8BitDo pads.
+
+**The desktop** — Firefox, Vesktop, the common app set, Catppuccin
+theming, and the plumbing: audio, Bluetooth, printing, fonts,
+automounting, Flatpak wired to Flathub.
+
+**Housekeeping** — zram, earlyoom, weekly garbage collection, and the
+Nix tooling worth having (`nh`, `nvd`, `nix-tree`).
+
+A few things wait for you to ask: a SteamOS-style Big Picture session,
+Sunshine game streaming, OpenRGB, Piper, and a performance kernel. Each
+is one commented line in the file below.
+
+## Turning features on and off
+
+Open `hosts/@HOSTNAME@/space-elevator.nix`. Every feature is one line:
+
+```nix
+spaceElevator = {
+  development.enable = true;         # Docker + libvirt
+  desktop.theming.flavor = "latte";  # light theme instead
+  desktop.bluetooth.enable = false;  # don't need it
+  gaming.enable = false;             # not a gaming machine after all
+};
+```
+
+Then `./update.sh` (or `sudo nixos-rebuild switch --flake .#@HOSTNAME@`).
+Nothing is downloaded from Space Elevator to enable a feature — every
+module is already in `modules/`, waiting to be switched on. Each option
+has a description in its module explaining what it does.
 
 ## Test drive in a VM (no installation needed)
 
@@ -719,8 +999,10 @@ around, so rolling back is always one reboot away.
 
 ## Adding another host
 
-Copy hosts/@HOSTNAME@ to hosts/<newname>, rename the files, adjust the
-module list, and add one line to flake/hosts.nix.
+Copy hosts/@HOSTNAME@ to hosts/<newname>, rename @HOSTNAME@.nix, adjust
+the switches in its space-elevator.nix, and add one line to
+flake/hosts.nix. Hosts share the same modules/ directory, so a second
+machine can enable a completely different set of features.
 EOF
 } > "$OUTDIR/README.md"
 
@@ -735,11 +1017,12 @@ else
   2. sudo nixos-rebuild switch --flake .#$HOSTNAME"
 fi
 
-COUNT="${#MODULES[@]}"
+COUNT=$(find "$OUTDIR/modules" -name '*.nix' ! -name default.nix | wc -l)
 gum style \
   --border rounded --border-foreground 2 \
   --padding "1 2" --margin "1 0" \
-  "Liftoff! Generated $OUTDIR with $COUNT modules." \
+  "Liftoff! Generated $OUTDIR with $COUNT features available." \
+  "Switch any of them on in hosts/$HOSTNAME/space-elevator.nix." \
   "" \
   "Test drive it in a VM right now:" \
   "  cd $OUTDIR && git init && git add -A" \

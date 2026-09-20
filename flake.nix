@@ -35,6 +35,27 @@
         space-elevator = mkScaffold system;
       });
 
+      # The module set on its own, for anyone who would rather point a
+      # flake input at it than vendor a copy:
+      #
+      #   imports = [ inputs.space-elevator.nixosModules.default ];
+      #   spaceElevator = { enable = true; desktop.plasma.enable = true; };
+      #
+      # Importing it turns nothing on by itself.
+      nixosModules = rec {
+        space-elevator = ./modules;
+        default = space-elevator;
+      };
+
+      # Evaluation tests for the module set — `nix flake check`.
+      # x86_64 only: they evaluate whole desktops, and a few packages
+      # (Steam, the NVIDIA driver) don't exist on aarch64 at all.
+      checks.x86_64-linux = import ./tests/checks.nix {
+        inherit nixpkgs;
+        system = "x86_64-linux";
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+      };
+
       nixosConfigurations.space-elevator-iso = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         specialArgs = { space-elevator = mkScaffold "x86_64-linux"; };
