@@ -185,7 +185,16 @@ The same config installs for real.
 
 Nothing expires — your config is self-contained, and `./update.sh`
 keeps it current. To move an existing machine onto newer Space
-Elevator modules, see [Upgrading an existing system](./UPGRADING.md).
+Elevator modules:
+
+```
+nix run github:jspadgett/space-elevator#upgrade
+```
+
+It carries your hardware config, password and settings across, builds
+before it switches, and leaves your old config in place. The full
+story, including how to do it by hand, is in
+[Upgrading an existing system](./UPGRADING.md).
 
 ## Getting help
 

@@ -150,6 +150,136 @@ check gpu-none "a GPU driver was enabled for a VM" \
   bash -c '! grep -qE "^\s+gpu\." "$1"' _ "$out/hosts/citest/space-elevator.nix"
 echo "OK: GPU variants"
 
+# ── Upgrading an existing system ────────────────────────────────────
+# Build a fixture in the OLD import-is-enable layout — the thing real
+# users are upgrading from — and check the upgrade script reads it
+# correctly and carries across what must not change.
+
+old_style_config() {
+  local root="$1" de="$2" gpu="$3"
+  mkdir -p "$root/hosts/oldbox" "$root/modules/common" "$root/modules/desktop" "$root/modules/gpu"
+  cat > "$root/flake.nix" <<'NIX'
+{
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+  outputs = { ... }: { };
+}
+NIX
+  cat > "$root/hosts/oldbox/oldbox.nix" <<NIX
+{ inputs, ... }: {
+  flake.nixosConfigurations.oldbox = inputs.nixpkgs.lib.nixosSystem {
+    modules = [
+      ./configuration.nix
+      ../../modules/common/base.nix
+      ../../modules/common/base-locale.nix
+      ../../modules/desktop/$de.nix
+      ../../modules/gpu/$gpu.nix
+      ../../modules/apps/docker.nix
+      ../../modules/tuning/tlp.nix
+      ../../modules/local/my-vpn.nix
+    ];
+  };
+}
+NIX
+  cat > "$root/hosts/oldbox/configuration.nix" <<'NIX'
+{ pkgs, ... }:
+{
+  imports = [ ./hardware-configuration.nix ];
+  networking.hostName = "oldbox";
+  time.timeZone = "Europe/Berlin";
+  users.users.dana = {
+    isNormalUser = true;
+    extraGroups = [ "wheel" ];
+    hashedPassword = "$6$rounds=100000$abcdefgh$SOMEHASHVALUE";
+  };
+  environment.systemPackages = with pkgs; [ vim emacs ];
+  system.stateVersion = "24.11";
+}
+NIX
+  cat > "$root/hosts/oldbox/hardware-configuration.nix" <<'NIX'
+{ config, lib, modulesPath, ... }:
+{
+  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
+  boot.initrd.luks.devices."cryptroot".device = "/dev/disk/by-uuid/DEADBEEF";
+  fileSystems."/" = { device = "/dev/mapper/cryptroot"; fsType = "btrfs"; options = [ "subvol=root" "compress=zstd" ]; };
+}
+NIX
+  cat > "$root/modules/common/base-locale.nix" <<'NIX'
+{ ... }:
+{
+  i18n.defaultLocale = "de_DE.UTF-8";
+  services.xserver.xkb.layout = "de";
+}
+NIX
+  mkdir -p "$root/modules/local"
+  echo '{ ... }: { services.tailscale.enable = true; }' > "$root/modules/local/my-vpn.nix"
+  : > "$root/modules/common/base.nix"
+}
+
+old=$(mktemp -d)/old
+new=$(mktemp -d)/new
+old_style_config "$old" plasma nvidia
+SCAFFOLD_BIN="" bash upgrade.sh --config "$old" --output "$new" --yes --no-build >/dev/null
+
+se="$new/hosts/oldbox/space-elevator.nix"
+cfg="$new/hosts/oldbox/configuration.nix"
+check upgrade "did not generate a config" test -f "$se"
+check upgrade "stateVersion was not preserved" has_line "$cfg" 'system.stateVersion = "24.11";'
+check upgrade "declared password was not carried over" has_line "$cfg" 'hashedPassword = "$6$rounds=100000$abcdefgh$SOMEHASHVALUE";'
+check upgrade "hardware config was not carried over" has_line \
+  "$new/hosts/oldbox/hardware-configuration.nix" 'cryptroot'
+check upgrade "hand-edited filesystem options were lost" has_line \
+  "$new/hosts/oldbox/hardware-configuration.nix" 'compress=zstd'
+check upgrade "desktop was not detected" is_enabled "$se" 'desktop\.plasma\.enable'
+check upgrade "GPU was not detected" grep -qE '^\s+gpu\.nvidia' "$se"
+check upgrade "development flavor was not detected" is_enabled "$se" 'development\.enable'
+check upgrade "TLP was not detected" is_enabled "$se" 'tuning\.tlp\.enable'
+check upgrade "username was not detected" has_line "$se" 'user = "dana";'
+check upgrade "timezone was not carried over" has_line "$cfg" 'time.timeZone = "Europe/Berlin";'
+check upgrade "locale was not carried over" has_line "$se" 'defaultLocale = "de_DE.UTF-8";'
+check upgrade "keyboard layout was not carried over" has_line "$se" 'keyboardLayout = "de";'
+check upgrade "review notes missing" test -f "$new/UPGRADE-NOTES.md"
+check upgrade "custom module not reported" has_line "$new/UPGRADE-NOTES.md" "local/my-vpn.nix"
+check upgrade "review diff missing" test -f "$new/UPGRADE-REVIEW.diff"
+check upgrade "old config was modified" has_line "$old/hosts/oldbox/configuration.nix" 'stateVersion = "24.11"'
+echo "OK: upgrade from the old layout"
+
+# The same script has to handle a config it generated itself — this is
+# how someone upgrades a second time.
+gen=$(mktemp -d)/cfg
+SE_GPU=Intel SE_DE=GNOME SE_FLAVORS="kdeconnect" SE_OUTDIR="$gen" MODULE_SOURCE="$PWD/modules" \
+  bash scaffold.sh >/dev/null
+again=$(mktemp -d)/again
+SCAFFOLD_BIN="" bash upgrade.sh --config "$gen" --output "$again" --yes --no-build >/dev/null
+re="$again/hosts/citest/space-elevator.nix"
+check upgrade-again "desktop lost on re-upgrade" is_enabled "$re" 'desktop\.gnome\.enable'
+check upgrade-again "GPU lost on re-upgrade" is_enabled "$re" 'gpu\.intel\.enable'
+check upgrade-again "kdeconnect lost on re-upgrade" is_enabled "$re" 'desktop\.kdeconnect\.enable'
+check upgrade-again "stateVersion lost on re-upgrade" \
+  has_line "$again/hosts/citest/configuration.nix" 'system.stateVersion = "26.05";'
+# The switches file lists every option you *didn't* pick as a comment.
+# Reading those back as settings is the failure mode this guards.
+check upgrade-again "a commented suggestion was read as a setting" \
+  is_not_enabled "$re" 'desktop\.plasma\.enable'
+check upgrade-again "a commented suggestion enabled the wrong GPU" \
+  is_not_enabled "$re" 'gpu\.nvidia\.enable'
+check upgrade-again "a commented suggestion enabled a flavor" \
+  is_not_enabled "$re" 'development\.enable'
+echo "OK: upgrade from the current layout"
+
+# Same trap, from the other direction: a machine with no GPU module
+# and no flavors must come back with no GPU module and no flavors.
+bare=$(mktemp -d)/bare
+SE_GPU="None / VM" SE_DE=Hyprland SE_FLAVORS="" SE_OUTDIR="$bare" MODULE_SOURCE="$PWD/modules" \
+  bash scaffold.sh >/dev/null
+bare2=$(mktemp -d)/bare2
+SCAFFOLD_BIN="" bash upgrade.sh --config "$bare" --output "$bare2" --yes --no-build >/dev/null
+rb="$bare2/hosts/citest/space-elevator.nix"
+check upgrade-bare "desktop lost" is_enabled "$rb" 'desktop\.hyprland\.enable'
+check upgrade-bare "invented a GPU driver" bash -c '! grep -qE "^\s+gpu\." "$1"' _ "$rb"
+check upgrade-bare "invented a flavor" is_not_enabled "$rb" 'development\.enable'
+check upgrade-bare "invented KDE Connect" is_not_enabled "$rb" 'desktop\.kdeconnect\.enable'
+echo "OK: upgrade invents nothing"
+
 # ── The generated file is valid Nix ─────────────────────────────────
 # (Evaluating the whole config needs nixpkgs; parsing does not.)
 

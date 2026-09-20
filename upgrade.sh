@@ -1,0 +1,416 @@
+#!/usr/bin/env bash
+# upgrade.sh — move a machine that already runs a Space Elevator config
+# onto the current module set.
+#
+#   nix run github:jspadgett/space-elevator#upgrade
+#
+# It reads the existing configuration, regenerates it with today's
+# modules, and carries across the things the wizard cannot know: the
+# hardware configuration, system.stateVersion, the declared password,
+# and which features were switched on. Then it builds — without
+# touching the running system — and only switches if you say so.
+#
+# Nothing is deleted. The old configuration is moved aside, and the
+# previous system generation stays in the boot menu either way.
+#
+# The long-hand version of what this does is docs/UPGRADING.md.
+#
+# SCAFFOLD_BIN is injected by flake.nix; the fallback covers dev runs.
+set -euo pipefail
+
+CONFIG_DIR="/etc/nixos"
+OUTPUT_DIR=""
+ASSUME_YES=0
+DO_BUILD=1
+DO_SWITCH=1
+STAMP="$(date +%Y%m%d-%H%M%S)"
+
+usage() {
+  cat <<'EOF'
+Upgrade an existing Space Elevator system to the current modules.
+
+  --config <path>   configuration to upgrade   (default: /etc/nixos)
+  --output <path>   where to build the new one (default: <config>.new)
+  --yes             accept what it detects, don't prompt
+  --no-build        generate only; don't compile
+  --no-switch       generate and build; don't activate or move anything
+  --help
+
+With --no-switch nothing outside <output> is touched, so it is a safe
+way to see what you would get.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --config) CONFIG_DIR="$2"; shift 2 ;;
+    --output) OUTPUT_DIR="$2"; shift 2 ;;
+    --yes | -y) ASSUME_YES=1; shift ;;
+    --no-build) DO_BUILD=0; DO_SWITCH=0; shift ;;
+    --no-switch) DO_SWITCH=0; shift ;;
+    --help | -h) usage; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+OUTPUT_DIR="${OUTPUT_DIR:-${CONFIG_DIR%/}.new}"
+
+# Without a terminal to prompt at, gum's styling is the only thing we
+# need from it — shim it so the script runs in CI and over pipes.
+if [ "$ASSUME_YES" = 1 ] && ! command -v gum >/dev/null 2>&1; then
+  gum() {
+    if [ "$1" = "style" ]; then
+      shift
+      while [ $# -gt 0 ] && [[ "$1" == --* ]]; do shift 2; done
+      printf '%s\n' "$@"
+    else
+      return 1
+    fi
+  }
+fi
+
+header() { gum style --border rounded --border-foreground 6 --padding "0 2" --margin "1 0" "$1"; }
+note()   { gum style --foreground 3 "$1"; }
+good()   { gum style --foreground 2 "$1"; }
+die()    { gum style --foreground 1 "$1"; exit 1; }
+
+confirm() {
+  [ "$ASSUME_YES" = 1 ] && return 0
+  gum confirm "$1"
+}
+
+# The generator, with its vendored modules.
+if [ -n "${SCAFFOLD_BIN:-}" ]; then
+  SCAFFOLD=("$SCAFFOLD_BIN")
+else
+  SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+  SCAFFOLD=(bash "$SELF_DIR/scaffold.sh")
+fi
+
+# ── Read the existing configuration ─────────────────────────────────
+
+[ -d "$CONFIG_DIR" ] || die "No configuration at $CONFIG_DIR. Point --config at yours."
+[ -f "$CONFIG_DIR/flake.nix" ] || die "$CONFIG_DIR has no flake.nix — this doesn't look like a Space Elevator config."
+[ -d "$CONFIG_DIR/hosts" ] || die "$CONFIG_DIR has no hosts/ directory — this doesn't look like a Space Elevator config."
+
+if [ "$DO_BUILD" = 1 ] && [ ! -e /etc/NIXOS ]; then
+  die "This doesn't look like a running NixOS system. Use --no-build to generate a config anyway."
+fi
+
+HOSTS=()
+while IFS= read -r d; do HOSTS+=("$(basename "$d")"); done \
+  < <(find "$CONFIG_DIR/hosts" -mindepth 1 -maxdepth 1 -type d | sort)
+
+case "${#HOSTS[@]}" in
+  0) die "No hosts found under $CONFIG_DIR/hosts." ;;
+  1) HOSTNAME="${HOSTS[0]}" ;;
+  *)
+    if [ "$ASSUME_YES" = 1 ]; then
+      HOSTNAME="$(hostname)"
+      printf '%s\n' "${HOSTS[@]}" | grep -qxF "$HOSTNAME" \
+        || die "Several hosts here (${HOSTS[*]}) and none matches $(hostname). Upgrade them one at a time with --config."
+    else
+      HOSTNAME=$(gum choose --header "Which host is this machine?" "${HOSTS[@]}")
+    fi
+    ;;
+esac
+
+HOST_DIR="$CONFIG_DIR/hosts/$HOSTNAME"
+OLD_CONFIGURATION="$HOST_DIR/configuration.nix"
+OLD_HARDWARE="$HOST_DIR/hardware-configuration.nix"
+[ -f "$OLD_CONFIGURATION" ] || die "Expected $OLD_CONFIGURATION to exist."
+
+# Everything the old config says about itself, in one haystack. This
+# reads both layouts: the old one imported module files, the current
+# one sets options, and the greps below look for either.
+#
+# Comments are stripped first, and that is not cosmetic. The switches
+# file lists every option you did *not* pick as a commented line, so
+# searching the raw text would read a GNOME machine as a Plasma one
+# with every flavor enabled.
+uncommented() { sed -E 's/#.*$//' "$@"; }
+
+HAYSTACK="$(uncommented "$CONFIG_DIR"/hosts/"$HOSTNAME"/*.nix "$CONFIG_DIR"/flake.nix 2>/dev/null || true)"
+
+# First capture group of the first match, or empty.
+extract() {
+  local pattern="$1" text="$2"
+  [[ "$text" =~ $pattern ]] && printf '%s' "${BASH_REMATCH[1]}"
+  return 0
+}
+
+# Was this feature on, in either layout?
+had() { printf '%s' "$HAYSTACK" | grep -qE "$1"; }
+
+STATE_VERSION="$(extract 'system\.stateVersion = "([^"]+)"' "$HAYSTACK")"
+TIMEZONE="$(extract 'time\.timeZone = "([^"]+)"' "$HAYSTACK")"
+USERNAME="$(extract 'users\.users\.([A-Za-z0-9_-]+) = \{' "$HAYSTACK")"
+[ -n "$USERNAME" ] || USERNAME="$(extract 'user = "([^"]+)"' "$HAYSTACK")"
+[ -n "$USERNAME" ] || USERNAME="${SUDO_USER:-$USER}"
+
+# Locale and keyboard: a module in the old layout, the switches file
+# in the current one. The old-layout module carried the values
+# directly; the current one only declares defaults, so a match there
+# is harmless either way.
+LOCALE_HAYSTACK="$HAYSTACK
+$(uncommented "$CONFIG_DIR"/modules/common/*.nix 2>/dev/null || true)"
+
+LOCALE="$(extract 'defaultLocale = "([^"]+)"' "$LOCALE_HAYSTACK")"
+[ -n "$LOCALE" ] || LOCALE="${LANG%%:*}"
+[ -n "$LOCALE" ] || LOCALE="en_US.UTF-8"
+
+# xkb.layout in the old layout, keyboardLayout in the current one.
+KB_LAYOUT="$(extract 'xkb\.layout = "([^"]+)"' "$LOCALE_HAYSTACK")"
+[ -n "$KB_LAYOUT" ] || KB_LAYOUT="$(extract 'keyboardLayout = "([^"]+)"' "$LOCALE_HAYSTACK")"
+[ -n "$KB_LAYOUT" ] || KB_LAYOUT="us"
+
+DE=""
+for de in plasma gnome cosmic hyprland; do
+  if had "modules/desktop/$de\.nix|desktop\.$de\.enable[[:space:]]*=[[:space:]]*true"; then
+    case "$de" in
+      plasma)   DE="KDE Plasma" ;;
+      gnome)    DE="GNOME" ;;
+      cosmic)   DE="COSMIC" ;;
+      hyprland) DE="Hyprland" ;;
+    esac
+    break
+  fi
+done
+[ -n "$DE" ] || DE="KDE Plasma"
+
+GPU="None / VM"
+if   had "modules/gpu/nvidia\.nix|gpu\.nvidia\.(enable[[:space:]]*=[[:space:]]*true|= \{)"; then GPU="NVIDIA"
+elif had "modules/gpu/amdgpu\.nix|gpu\.amd\.enable[[:space:]]*=[[:space:]]*true";           then GPU="AMD"
+elif had "modules/gpu/intel-gpu\.nix|gpu\.intel\.enable[[:space:]]*=[[:space:]]*true";      then GPU="Intel"
+fi
+
+TLP=0
+had "modules/tuning/tlp\.nix|tuning\.tlp\.enable[[:space:]]*=[[:space:]]*true" && TLP=1
+
+FLAVORS=""
+had "modules/apps/(docker|virtualisation)\.nix|development\.enable[[:space:]]*=[[:space:]]*true" \
+  && FLAVORS="development"
+if had "modules/desktop/kdeconnect\.nix|desktop\.kdeconnect\.enable[[:space:]]*=[[:space:]]*true"; then
+  FLAVORS="${FLAVORS:+$FLAVORS,}kdeconnect"
+fi
+
+# PRIME: carried over if the old config set bus IDs, which means this
+# is a hybrid laptop already set up for offload. In the old layout
+# they were edited into the module itself, so look there too — and
+# anchor the match, so the option's own declaration and examples in
+# the current module don't count.
+PRIME=0
+if printf '%s\n%s' "$HAYSTACK" "$(uncommented "$CONFIG_DIR"/modules/gpu/nvidia.nix 2>/dev/null || true)" \
+    | grep -qE '^[[:space:]]*nvidiaBusId[[:space:]]*=[[:space:]]*"PCI:'; then
+  PRIME=1
+fi
+
+# The declared password, so the upgrade doesn't silently change it.
+PASSWORD_LINE="$(grep -oE '(hashedPassword|initialPassword) = "[^"]*";' "$OLD_CONFIGURATION" | head -1 || true)"
+
+# ── Confirm ─────────────────────────────────────────────────────────
+
+header "Upgrading $HOSTNAME"
+
+gum style --padding "0 2" \
+  "Reading    $CONFIG_DIR" \
+  "Building   $OUTPUT_DIR" \
+  "" \
+  "host            $HOSTNAME" \
+  "user            $USERNAME" \
+  "desktop         $DE" \
+  "GPU             $GPU$( [ "$PRIME" = 1 ] && echo "  (PRIME offload)" )" \
+  "timezone        ${TIMEZONE:-detected}" \
+  "locale          $LOCALE, keyboard $KB_LAYOUT" \
+  "laptop power    $( [ "$TLP" = 1 ] && echo "TLP" || echo "no" )" \
+  "extras          ${FLAVORS:-none}" \
+  "stateVersion    ${STATE_VERSION:-NOT FOUND}" \
+  "password        $( [ -n "$PASSWORD_LINE" ] && echo "carried over" || echo "unchanged" )"
+
+if [ -z "$STATE_VERSION" ]; then
+  note "No system.stateVersion found in the old config. That value must not change, so I can't safely continue."
+  die "Set it in $OLD_CONFIGURATION, or upgrade by hand: docs/UPGRADING.md"
+fi
+
+note "Gaming (Steam, GameMode, the launchers), Firefox and Catppuccin theming are standard now, so expect several GB of downloads."
+
+confirm "Generate the new configuration?" || { note "Nothing was written."; exit 0; }
+
+# ── Generate ────────────────────────────────────────────────────────
+
+if [ -e "$OUTPUT_DIR" ]; then
+  confirm "$OUTPUT_DIR already exists. Replace it?" || die "Stopping; nothing was written."
+  rm -rf "${OUTPUT_DIR:?}"
+fi
+
+SE_NONINTERACTIVE=1 \
+SE_HOSTNAME="$HOSTNAME" \
+SE_USERNAME="$USERNAME" \
+SE_TIMEZONE="${TIMEZONE:-}" \
+SE_LOCALE="$LOCALE" \
+SE_KEYMAP="$KB_LAYOUT" \
+SE_GPU="$GPU" \
+SE_DE="$DE" \
+SE_TLP="$TLP" \
+SE_PRIME="$PRIME" \
+SE_FLAVORS="$FLAVORS" \
+SE_OUTDIR="$OUTPUT_DIR" \
+  "${SCAFFOLD[@]}" >/dev/null
+
+NEW_HOST_DIR="$OUTPUT_DIR/hosts/$HOSTNAME"
+NEW_CONFIGURATION="$NEW_HOST_DIR/configuration.nix"
+
+# ── Carry across what the wizard couldn't know ──────────────────────
+
+# 1. The hardware configuration, as it is. Regenerating it would lose
+#    anything you hand-edited (LUKS devices, btrfs subvolume options),
+#    and this file is what currently boots the machine.
+HARDWARE_NOTE="copied from the old config"
+if [ -f "$OLD_HARDWARE" ] && ! grep -q "^# PLACEHOLDER" "$OLD_HARDWARE"; then
+  cp "$OLD_HARDWARE" "$NEW_HOST_DIR/hardware-configuration.nix"
+else
+  HARDWARE_NOTE="regenerated from this machine (the old one was a placeholder)"
+  HW_TEXT=""
+  if command -v nixos-generate-config >/dev/null 2>&1; then
+    HW_TEXT="$(nixos-generate-config --show-hardware-config 2>/dev/null || true)"
+    [ -n "$HW_TEXT" ] || HW_TEXT="$(sudo -n nixos-generate-config --show-hardware-config 2>/dev/null || true)"
+  fi
+  if [ -n "$HW_TEXT" ]; then
+    printf '%s\n' "$HW_TEXT" > "$NEW_HOST_DIR/hardware-configuration.nix"
+  else
+    HARDWARE_NOTE="still a placeholder — replace it before you install anywhere"
+  fi
+fi
+
+# 2. stateVersion. Records the release this machine was installed
+#    with; some services read it to decide on-disk formats, so it must
+#    survive every upgrade.
+sed -i "s|system.stateVersion = \"[^\"]*\"|system.stateVersion = \"$STATE_VERSION\"|" "$NEW_CONFIGURATION"
+
+# 3. The declared password, so nobody is locked out by a rebuild.
+if [ -n "$PASSWORD_LINE" ]; then
+  ESCAPED="${PASSWORD_LINE//\\/\\\\}"
+  ESCAPED="${ESCAPED//|/\\|}"
+  sed -i -E "s|(hashedPassword\|initialPassword) = \"[^\"]*\";.*|$ESCAPED|" "$NEW_CONFIGURATION"
+fi
+
+# 4. Anything of yours the wizard doesn't write. Too varied to merge
+#    safely, so it gets reported rather than guessed at.
+CUSTOM_MODULES=()
+if [ -d "$CONFIG_DIR/modules" ]; then
+  while IFS= read -r f; do
+    rel="${f#"$CONFIG_DIR"/modules/}"
+    [ -e "$OUTPUT_DIR/modules/$rel" ] || CUSTOM_MODULES+=("$rel")
+  done < <(find "$CONFIG_DIR/modules" -name '*.nix' | sort)
+fi
+
+DIFF_FILE="$OUTPUT_DIR/UPGRADE-REVIEW.diff"
+diff -u "$OLD_CONFIGURATION" "$NEW_CONFIGURATION" > "$DIFF_FILE" 2>/dev/null || true
+
+{
+  echo "# Upgrade review — $HOSTNAME"
+  echo
+  echo "Generated $STAMP by \`space-elevator#upgrade\`, from $CONFIG_DIR."
+  echo
+  echo "## Carried across for you"
+  echo
+  echo "- hardware-configuration.nix — $HARDWARE_NOTE"
+  echo "- system.stateVersion — kept at \"$STATE_VERSION\""
+  if [ -n "$PASSWORD_LINE" ]; then
+    echo "- the declared password line, so your login is unchanged"
+  fi
+  echo "- desktop ($DE), GPU ($GPU), extras (${FLAVORS:-none})"
+  if [ "$PRIME" = 1 ]; then
+    echo "- PRIME offload, with bus IDs re-read from this machine — worth"
+    echo "  checking them against \`lspci | grep -E 'VGA|3D'\`"
+  fi
+  echo
+  echo "## Worth your eyes"
+  echo
+  echo "\`UPGRADE-REVIEW.diff\` is your old configuration.nix against the"
+  echo "new one. Anything you added by hand — extra packages, extra users,"
+  echo "services, boot tweaks — shows up there as a removal, and needs"
+  echo "copying into hosts/$HOSTNAME/configuration.nix."
+  echo
+  echo "Firewall ports have moved: \`networking.firewall.allowedTCPPorts\`"
+  echo "is now \`spaceElevator.network.firewall.allowedTCPPorts\`, set in"
+  echo "hosts/$HOSTNAME/space-elevator.nix."
+  if [ "${#CUSTOM_MODULES[@]}" -gt 0 ]; then
+    echo
+    echo "## Your own modules"
+    echo
+    echo "These were in the old modules/ and are not part of the Space"
+    echo "Elevator set, so they were not copied. Bring them over and add"
+    echo "them to the modules list in hosts/$HOSTNAME/$HOSTNAME.nix:"
+    echo
+    printf -- "- %s\n" "${CUSTOM_MODULES[@]}"
+  fi
+  echo
+  echo "## What is on now that wasn't before"
+  echo
+  echo "Steam with Proton-GE, gamescope and protontricks; Heroic, Lutris"
+  echo "and ProtonUp-Qt; GameMode and MangoHud; controller support;"
+  echo "Firefox; Vesktop; Catppuccin theming. Each is one line to remove"
+  echo "in hosts/$HOSTNAME/space-elevator.nix."
+} > "$OUTPUT_DIR/UPGRADE-NOTES.md"
+
+git -C "$OUTPUT_DIR" add -A 2>/dev/null || true
+
+good "Generated $OUTPUT_DIR"
+note "Read $OUTPUT_DIR/UPGRADE-NOTES.md — it lists what carried over and what didn't."
+if [ "${#CUSTOM_MODULES[@]}" -gt 0 ]; then
+  note "Found ${#CUSTOM_MODULES[@]} module(s) of your own that were not copied; see the notes."
+fi
+
+[ "$DO_BUILD" = 1 ] || exit 0
+
+# ── Build, without touching the running system ──────────────────────
+
+header "Building (nothing is activated yet)"
+note "This is where the downloading happens. A failure here leaves your running system completely untouched."
+
+if ! nixos-rebuild build --flake "$OUTPUT_DIR#$HOSTNAME"; then
+  die "Build failed. Your system is unchanged. Fix what it reported in $OUTPUT_DIR and re-run with --config $CONFIG_DIR."
+fi
+
+good "Built successfully."
+
+if command -v nvd >/dev/null 2>&1 && [ -e ./result ]; then
+  header "What would change"
+  nvd diff /run/current-system ./result || true
+fi
+
+[ "$DO_SWITCH" = 1 ] || {
+  note "Stopping before activation, as asked. To go ahead later:"
+  note "  sudo nixos-rebuild switch --flake $OUTPUT_DIR#$HOSTNAME"
+  exit 0
+}
+
+# ── Switch ──────────────────────────────────────────────────────────
+
+confirm "Switch to the new system now?" || {
+  note "Left as it is. The new configuration is at $OUTPUT_DIR; switch when you're ready:"
+  note "  sudo nixos-rebuild switch --flake $OUTPUT_DIR#$HOSTNAME"
+  exit 0
+}
+
+BACKUP_DIR="${CONFIG_DIR%/}.backup-$STAMP"
+sudo mv "$CONFIG_DIR" "$BACKUP_DIR"
+sudo mv "$OUTPUT_DIR" "$CONFIG_DIR"
+good "Old configuration moved to $BACKUP_DIR"
+
+if sudo nixos-rebuild switch --flake "$CONFIG_DIR#$HOSTNAME"; then
+  gum style --border double --border-foreground 2 --padding "1 3" --margin "1 0" --align center \
+    "Upgraded." \
+    "" \
+    "Log out and back in to pick up the new session." \
+    "If anything is wrong, reboot and choose the" \
+    "previous generation in the boot menu."
+  note "Old configuration: $BACKUP_DIR"
+  note "Still to read: $CONFIG_DIR/UPGRADE-NOTES.md"
+else
+  gum style --foreground 1 "The switch reported an error — scroll up for details."
+  note "Your previous system is still in the boot menu, and the old configuration is at $BACKUP_DIR:"
+  note "  sudo nixos-rebuild switch --flake $BACKUP_DIR#$HOSTNAME"
+  exit 1
+fi

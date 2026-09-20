@@ -32,6 +32,47 @@ jobs:
       - name: nix flake check
         run: nix flake check --print-build-logs
 
+  packaged:
+    name: The packaged apps, as users run them
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      # tests/run.sh drives the scripts with the system bash. The
+      # shipped apps run on the minimal bash from nixpkgs, which is
+      # built without programmable completion and a few other
+      # niceties — so exercise the real binaries too, and treat
+      # anything on stderr about a missing command as a failure.
+      - name: Generate a config with the packaged wizard
+        env:
+          SE_NONINTERACTIVE: "1"
+          SE_HOSTNAME: citest
+          SE_USERNAME: ci
+          SE_TIMEZONE: Etc/UTC
+          SE_LOCALE: en_US.UTF-8
+          SE_KEYMAP: us
+          SE_GPU: AMD
+          SE_DE: GNOME
+          SE_FLAVORS: development
+          SE_OUTDIR: ${{ github.workspace }}/out
+        run: |
+          nix run .#default 2>&1 | tee wizard.log
+          ! grep -qiE "command not found|unbound variable" wizard.log
+      - name: Upgrade it with the packaged upgrade app
+        run: |
+          nix run .#upgrade -- \
+            --config "$PWD/out" --output "$PWD/upgraded" --yes --no-build 2>&1 | tee upgrade.log
+          ! grep -qiE "command not found|unbound variable" upgrade.log
+      - name: The upgrade kept the answers and invented nothing
+        run: |
+          switches=upgraded/hosts/citest/space-elevator.nix
+          grep -qE '^\s+desktop\.gnome\.enable = true;' "$switches"
+          grep -qE '^\s+gpu\.amd\.enable = true;' "$switches"
+          grep -qE '^\s+development\.enable = true;' "$switches"
+          ! grep -qE '^\s+desktop\.plasma\.enable = true;' "$switches"
+          ! grep -qE '^\s+gpu\.nvidia' "$switches"
+          test -f upgraded/UPGRADE-NOTES.md
+
   eval:
     name: Evaluate generated config (${{ matrix.de }})
     runs-on: ubuntu-latest

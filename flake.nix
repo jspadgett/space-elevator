@@ -21,6 +21,20 @@
             ${builtins.readFile ./scaffold.sh}
           '';
         };
+      # Upgrades a machine that already runs a generated config. It
+      # carries the scaffold in its closure and calls it, so the whole
+      # thing works from one `nix run`.
+      mkUpgrade = system:
+        let pkgs = nixpkgs.legacyPackages.${system};
+        in pkgs.writeShellApplication {
+          name = "space-elevator-upgrade";
+          runtimeInputs = with pkgs; [ gum coreutils gnused gnugrep diffutils findutils git ];
+          excludeShellChecks = [ "SC2016" ];
+          text = ''
+            SCAFFOLD_BIN="${mkScaffold system}/bin/space-elevator"
+            ${builtins.readFile ./upgrade.sh}
+          '';
+        };
     in
     {
       apps = forAllSystems (system: {
@@ -28,11 +42,16 @@
           type = "app";
           program = "${mkScaffold system}/bin/space-elevator";
         };
+        upgrade = {
+          type = "app";
+          program = "${mkUpgrade system}/bin/space-elevator-upgrade";
+        };
       });
 
       packages = forAllSystems (system: {
         default = mkScaffold system;
         space-elevator = mkScaffold system;
+        upgrade = mkUpgrade system;
       });
 
       # The module set on its own, for anyone who would rather point a

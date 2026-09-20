@@ -1,28 +1,63 @@
-# Upgrading an existing system by regenerating
+# Upgrading an existing system
 
-This guide moves a machine that's already running a Space Elevator
-config onto the current one, by running the wizard again and carrying
-your machine-specific bits across.
-
-It's the most thorough of the three routes and the one that leaves you
-with the cleanest result: a config identical to what a fresh install
-produces today, with your disks, your user and your additions.
+Moves a machine that's already running a Space Elevator config onto the
+current modules, keeping your disks, your user and your additions.
 
 **First, the honest answer: you may not need to do this.** Your config
 is self-contained plain NixOS. It doesn't phone home, nothing expires,
-and `./update.sh` keeps nixpkgs current without any of this. Regenerate
+and `./update.sh` keeps nixpkgs current without any of this. Upgrade
 because you want the new gaming stack and the option-based switches —
 not because you have to.
 
 Two things to know before starting:
 
-- **You can't lose your system.** Every step below is reversible, and
+- **You can't lose your system.** Everything here is reversible, and
   even a switch that goes wrong is one reboot away from the old
-  generation. Don't delete anything until you're happy.
+  generation. Nothing is deleted.
 - **Set aside an hour**, most of it downloads. The new baseline pulls
   in Steam, Heroic, Lutris, Firefox and Vesktop — several GB.
 
+## The short version
+
+On the machine you're upgrading:
+
+```sh
+nix run github:jspadgett/space-elevator#upgrade
+```
+
+It reads your existing config, shows you what it found, regenerates it
+with the current modules, and carries across the things the wizard
+can't know — your hardware configuration, `system.stateVersion`, your
+declared password, and which features you had on. Then it builds
+*without touching the running system*, shows you what would change, and
+switches only if you say yes. Your old config is moved aside, not
+deleted.
+
+Useful flags:
+
+| | |
+|---|---|
+| `--no-switch` | generate and build, change nothing. A safe way to see what you'd get. |
+| `--no-build` | generate only, don't compile |
+| `--config <path>` | if your config isn't at `/etc/nixos` |
+| `--yes` | don't prompt |
+
+Afterwards, read `UPGRADE-NOTES.md` in the new config. It lists what
+carried over, what didn't, and anything of yours that needs moving by
+hand — the script reports those rather than guessing at them.
+
+**What it can't do for you:** merge your own additions to
+`configuration.nix` (extra packages, services, users) or your own
+modules. Nix isn't safely mergeable by a shell script, so it hands you
+a diff instead and tells you what to look at.
+
+The rest of this page is the same job done by hand — worth following if
+you'd rather see every step, or if your config has drifted far enough
+from a generated one that the script's detection is worth double-checking.
+
 ---
+
+# Doing it by hand
 
 ## Step 1 — Find your current config and back it up
 

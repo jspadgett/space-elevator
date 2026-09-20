@@ -17,8 +17,12 @@ nix run github:jspadgett/space-elevator
 **New to NixOS?** The [complete beginner's guide](./docs/INSTALL.md)
 takes you from blank USB stick to working desktop.
 
-**Already running one?** [Upgrading an existing system](./docs/UPGRADING.md)
-moves a machine onto the current modules, step by step.
+**Already running one?** `nix run github:jspadgett/space-elevator#upgrade`
+moves a machine onto the current modules, carrying your hardware
+config, `stateVersion`, password and feature choices across. It builds
+before it switches, and nothing is deleted. See
+[Upgrading an existing system](./docs/UPGRADING.md), which also covers
+doing it by hand.
 
 ## What you get without asking
 

@@ -5,8 +5,12 @@
 # Non-interactive mode (for CI / scripting): set SE_NONINTERACTIVE=1 and any of
 #   SE_HOSTNAME SE_USERNAME SE_PASSWORD SE_TIMEZONE SE_LOCALE SE_KEYMAP
 #   SE_OUTDIR SE_GPU (AMD|Intel|NVIDIA|None) SE_DE ("KDE Plasma"|GNOME|COSMIC|Hyprland)
-#   SE_FLAVORS (comma list of: gaming,development,theming,kdeconnect)
-#   SE_PRIME=0 to decline PRIME offload on a detected hybrid laptop
+#   SE_FLAVORS (comma list of: development,kdeconnect — gaming and
+#     theming are standard and not optional)
+#   SE_TLP=1|0 to override the battery check
+#   SE_PRIME=1 to set up PRIME offload from this machine's detected
+#     bus IDs (non-interactive defaults to off, since the machine
+#     running the wizard may not be the target)
 #
 # The generated config vendors the whole module set and switches
 # features on through options in hosts/<name>/space-elevator.nix.
@@ -331,16 +335,24 @@ else
   fi
 fi
 
+# A battery means a laptop. Plain globbing, not compgen: the minimal
+# bash this ships with is built without programmable completion, so
+# compgen isn't there and the check silently found nothing.
 IS_LAPTOP=false
-compgen -G "/sys/class/power_supply/BAT*" >/dev/null && IS_LAPTOP=true
+for battery in /sys/class/power_supply/BAT*; do
+  if [ -e "$battery" ]; then
+    IS_LAPTOP=true
+    break
+  fi
+done
 
 USE_TLP=false
-if [ "$IS_LAPTOP" = true ]; then
-  if [ "$NONINT" = 1 ]; then
-    USE_TLP=true
-  else
-    gum confirm "Battery detected (laptop) — include TLP power management?" && USE_TLP=true
-  fi
+if [ "$NONINT" = 1 ]; then
+  # SE_TLP overrides the battery check either way, so a script that
+  # knows what the machine had can say so.
+  [ "${SE_TLP:-$( [ "$IS_LAPTOP" = true ] && echo 1 || echo 0 )}" = 1 ] && USE_TLP=true
+elif [ "$IS_LAPTOP" = true ]; then
+  gum confirm "Battery detected (laptop) — include TLP power management?" && USE_TLP=true
 fi
 
 # On an installed NixOS system we can capture the real hardware config
@@ -362,11 +374,12 @@ elif [ -n "$AMD_BUSID" ];    then IGPU_BUSID="$AMD_BUSID";  IGPU_ATTR="amdgpuBus
 fi
 
 USE_PRIME=false
-if [ "$GPU" = "NVIDIA" ] && [ "$CAPTURE_HW" = true ] && [ "$IS_LAPTOP" = true ] \
-    && [ -n "$IGPU_BUSID" ] && [ -n "$NVIDIA_BUSID" ]; then
+if [ "$GPU" = "NVIDIA" ] && [ -n "$IGPU_BUSID" ] && [ -n "$NVIDIA_BUSID" ]; then
   if [ "$NONINT" = 1 ]; then
-    [ "${SE_PRIME:-1}" = 1 ] && USE_PRIME=true
-  else
+    # Opt-in only: these bus IDs describe the machine running the
+    # wizard, which non-interactively is not necessarily the target.
+    [ "${SE_PRIME:-0}" = 1 ] && USE_PRIME=true
+  elif [ "$CAPTURE_HW" = true ] && [ "$IS_LAPTOP" = true ]; then
     gum confirm "Hybrid graphics detected (integrated $IGPU_BUSID + NVIDIA $NVIDIA_BUSID) — set up PRIME offload? (recommended on laptops: the dGPU powers down when idle)" \
       && USE_PRIME=true
   fi
