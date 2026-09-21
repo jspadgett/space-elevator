@@ -46,6 +46,18 @@ note() { gum style --foreground 3 "$1"; }
 
 die() { gum style --foreground 1 "$1"; exit 1; }
 
+# Make a directory exist and belong to this user. The target may sit
+# on a root-owned filesystem — /etc/nixos.new beside a real config,
+# /mnt/etc/nixos in the installer — and mkdir -p succeeds on a
+# directory that already exists, so writability is what decides.
+ensure_writable_dir() {
+  if ! mkdir -p "$1" 2>/dev/null || [ ! -w "$1" ]; then
+    sudo mkdir -p "$1"
+    sudo chown "$(id -u):$(id -g)" "$1"
+    sudo chmod u+rwx "$1"
+  fi
+}
+
 # gum choose exits nonzero on ESC/empty; treat as "nothing selected"
 pick_many() {
   gum choose --no-limit --header "$1" "${@:2}" || true
@@ -498,13 +510,19 @@ fi
 header "Generating $OUTDIR"
 GENERATING=true
 
-if ! mkdir -p "$OUTDIR" 2>/dev/null; then
-  # Target is on a root-owned filesystem (e.g. /mnt/etc/nixos in the
-  # installer) — create it privileged, then hand it to this user so
-  # normal file writes and git work.
-  sudo mkdir -p "$OUTDIR"
-  sudo chown "$(id -u):$(id -g)" "$OUTDIR"
-fi
+ensure_writable_dir "$OUTDIR"
+
+# Owning the directory says nothing about a tree already inside it.
+# Writing part of a config over one we can only partly replace would
+# leave a mixture of both behind, so the directories we are about to
+# write have to be ours before anything is generated.
+for sub in flake hosts modules; do
+  if [ -e "$OUTDIR/$sub" ] && [ ! -w "$OUTDIR/$sub" ]; then
+    die "$OUTDIR/$sub isn't writable by this user. Hand the tree over, then re-run:
+  sudo chown -R $(id -u):$(id -g) $OUTDIR"
+  fi
+done
+
 mkdir -p "$OUTDIR/flake" "$OUTDIR/hosts/$HOSTNAME" "$OUTDIR/modules"
 
 # Vendor the complete module set. Everything is imported; nothing is
