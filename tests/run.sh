@@ -312,6 +312,18 @@ esac
 EOF
 chmod +x "$fakebin/lspci"
 
+# Both scripts hand a directory they cannot write to sudo. The
+# fixtures below belong to the test user, so opening the parent is all
+# the privilege those calls need.
+cat > "$fakebin/sudo" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" = "-n" ] && shift
+last=${*: -1}
+case "$last" in /*) chmod u+wx "$(dirname "$last")" 2>/dev/null || true ;; esac
+exec "$@"
+EOF
+chmod +x "$fakebin/sudo"
+
 prime=$(mktemp -d)/prime
 PATH="$fakebin:$PATH" SE_GPU=NVIDIA SE_PRIME=1 SE_DE="KDE Plasma" \
   SE_OUTDIR="$prime" MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null
@@ -469,6 +481,32 @@ check upgrade-preserve-nosv "a missing stateVersion stopped the upgrade" \
   bash -c 'SCAFFOLD_BIN="" bash upgrade.sh --config "$1" --output "$2" --yes --no-build >/dev/null' \
   _ "$nosv" "$nosvup"
 echo "OK: the current layout does not need a detected stateVersion"
+
+# ── The default output directory ────────────────────────────────────
+# With no --output the new tree is written beside the config, so on a
+# real /etc/nixos the upgrade creates /etc/nixos.new — a directory it
+# has no permission to create, since it runs unprivileged. The fixture
+# stages that with a mode root would ignore, so it only means
+# something as a normal user.
+if [ "$(id -u)" -ne 0 ]; then
+  etc=$(mktemp -d)/etc
+  mkdir -p "$etc"
+  SE_GPU=Intel SE_DE=GNOME SE_OUTDIR="$etc/nixos" MODULE_SOURCE="$PWD/modules" \
+    bash scaffold.sh >/dev/null
+  chmod 555 "$etc"
+  PATH="$fakebin:$PATH" SCAFFOLD_BIN="" \
+    bash upgrade.sh --config "$etc/nixos" --yes --no-build >/dev/null 2>&1 || true
+  check upgrade-default-output "the tree was not written beside the config" \
+    test -f "$etc/nixos.new/hosts/citest/space-elevator.nix"
+  check upgrade-default-output "the switches file did not carry across" \
+    has_line "$etc/nixos.new/hosts/citest/space-elevator.nix" 'user.name = "ci";'
+  check upgrade-default-output "the new tree does not belong to this user" \
+    test -w "$etc/nixos.new"
+  chmod 755 "$etc"
+  echo "OK: the default output directory is created"
+else
+  echo "SKIP: running as root, an unwritable directory cannot be staged"
+fi
 
 # Regenerated trees resolve their inputs fresh, so an old lock must
 # not travel with them.

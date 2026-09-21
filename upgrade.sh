@@ -79,6 +79,18 @@ confirm() {
   gum confirm "$1"
 }
 
+# Make a directory exist and belong to this user. The target may sit
+# on a root-owned filesystem — /etc/nixos.new beside a real config,
+# /mnt/etc/nixos in the installer — and mkdir -p succeeds on a
+# directory that already exists, so writability is what decides.
+ensure_writable_dir() {
+  if ! mkdir -p "$1" 2>/dev/null || [ ! -w "$1" ]; then
+    sudo mkdir -p "$1"
+    sudo chown "$(id -u):$(id -g)" "$1"
+    sudo chmod u+rwx "$1"
+  fi
+}
+
 # The generator, with its vendored modules.
 if [ -n "${SCAFFOLD_BIN:-}" ]; then
   SCAFFOLD=("$SCAFFOLD_BIN")
@@ -325,9 +337,10 @@ SE_OWNED=(
   update.sh
 )
 
+ensure_writable_dir "$OUTPUT_DIR"
+
 if [ "$CURRENT_LAYOUT" = 1 ]; then
-  mkdir -p "$(dirname "$OUTPUT_DIR")"
-  cp -a "$CONFIG_DIR" "$OUTPUT_DIR"
+  cp -a "$CONFIG_DIR/." "$OUTPUT_DIR/"
   for owned in "${SE_OWNED[@]}"; do
     rm -rf "${OUTPUT_DIR:?}/$owned"
     if [ -e "$REFERENCE_DIR/$owned" ]; then
@@ -336,8 +349,7 @@ if [ "$CURRENT_LAYOUT" = 1 ]; then
     fi
   done
 else
-  mkdir -p "$(dirname "$OUTPUT_DIR")"
-  mv "$REFERENCE_DIR" "$OUTPUT_DIR"
+  cp -a "$REFERENCE_DIR/." "$OUTPUT_DIR/"
 fi
 
 NEW_HOST_DIR="$OUTPUT_DIR/hosts/$HOSTNAME"
