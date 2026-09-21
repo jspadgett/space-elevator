@@ -33,8 +33,8 @@ generate() {
   echo "$out"
 }
 
-has_line() { grep -qF "$2" "$1"; }
-lacks_line() { ! grep -qF "$2" "$1"; }
+has_line() { grep -qF -- "$2" "$1"; }
+lacks_line() { ! grep -qF -- "$2" "$1"; }
 
 # An option set to true on its own line — not one of the commented-out
 # suggestions, which are indented behind a "# ".
@@ -312,6 +312,18 @@ esac
 EOF
 chmod +x "$fakebin/lspci"
 
+# Both scripts hand a directory they cannot write to sudo. The
+# fixtures below belong to the test user, so opening the parent is all
+# the privilege those calls need.
+cat > "$fakebin/sudo" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" = "-n" ] && shift
+last=${*: -1}
+case "$last" in /*) chmod u+wx "$(dirname "$last")" 2>/dev/null || true ;; esac
+exec "$@"
+EOF
+chmod +x "$fakebin/sudo"
+
 prime=$(mktemp -d)/prime
 PATH="$fakebin:$PATH" SE_GPU=NVIDIA SE_PRIME=1 SE_DE="KDE Plasma" \
   SE_OUTDIR="$prime" MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null
@@ -327,29 +339,204 @@ check upgrade-prime "the iGPU bus ID was lost" has_line "$pse" 'intelBusId = "PC
 check upgrade-prime "the NVIDIA bus ID was lost" has_line "$pse" 'nvidiaBusId = "PCI:1:0:0";'
 echo "OK: upgrade keeps PRIME offload"
 
-# ── ... even when the switch is written a way we didn't predict ─────
-# Detection greps text, so it can only ever know the spellings we
-# thought of. A formatter that breaks `= {` onto its own line is
-# enough to miss — and nixfmt does exactly that on long attrsets.
-# Bus IDs are the durable signal: if the old config names an NVIDIA
-# card for offload, the driver has to come across regardless of how
-# the enabling attribute happens to be laid out.
-odd=$(mktemp -d)/odd
-PATH="$fakebin:$PATH" SE_GPU=NVIDIA SE_PRIME=1 SE_DE="KDE Plasma" \
-  SE_OUTDIR="$odd" MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null
-sed -i -E 's/^([[:space:]]*)gpu\.nvidia = \{$/\1gpu.nvidia =\n\1{/' \
-  "$odd/hosts/citest/space-elevator.nix"
-check upgrade-prime-odd "fixture did not reach the unrecognised layout" \
-  grep -qE '^[[:space:]]+gpu\.nvidia[[:space:]]*=[[:space:]]*$' \
-  "$odd/hosts/citest/space-elevator.nix"
-odded=$(mktemp -d)/odded
+# ── An old-layout hybrid laptop ─────────────────────────────────────
+# The old layout keeps bus IDs inside the GPU module rather than in a
+# switches file. Detection reads them from there and the regenerated
+# config gets PRIME.
+oldp=$(mktemp -d)/oldp
+old_style_config "$oldp" plasma nvidia
+cat > "$oldp/modules/gpu/nvidia.nix" <<'NIX'
+{ ... }:
+{
+  hardware.nvidia.prime = {
+    intelBusId = "PCI:0:2:0";
+    nvidiaBusId = "PCI:1:0:0";
+  };
+}
+NIX
+oldpd=$(mktemp -d)/oldpd
 PATH="$fakebin:$PATH" SCAFFOLD_BIN="" \
-  bash upgrade.sh --config "$odd" --output "$odded" --yes --no-build >/dev/null
-ose="$odded/hosts/citest/space-elevator.nix"
-check upgrade-prime-odd "bus IDs were present but the driver was dropped" \
-  grep -qE '^[[:space:]]+gpu\.nvidia[[:space:]]*=[[:space:]]*\{' "$ose"
-check upgrade-prime-odd "the NVIDIA bus ID was lost" has_line "$ose" 'nvidiaBusId = "PCI:1:0:0";'
+  bash upgrade.sh --config "$oldp" --output "$oldpd" --yes --no-build >/dev/null
+opse="$oldpd/hosts/oldbox/space-elevator.nix"
+check upgrade-prime-old "the NVIDIA driver was dropped" \
+  grep -qE '^[[:space:]]+gpu\.nvidia[[:space:]]*=[[:space:]]*\{' "$opse"
+check upgrade-prime-old "PRIME offload was dropped" \
+  grep -qE '^[[:space:]]+prime[[:space:]]*=[[:space:]]*\{' "$opse"
+check upgrade-prime-old "the NVIDIA bus ID was lost" has_line "$opse" 'nvidiaBusId = "PCI:1:0:0";'
+echo "OK: old-layout PRIME offload survives"
+
+# ── Bus IDs imply the driver ────────────────────────────────────────
+# Offload bus IDs in the host config with no GPU module imported.
+# Detection finds no GPU; the bus IDs name an NVIDIA card, so the
+# regenerated config gets the driver.
+guard=$(mktemp -d)/guard
+old_style_config "$guard" plasma nvidia
+sed -i '/modules\/gpu\/nvidia\.nix/d' "$guard/hosts/oldbox/oldbox.nix"
+sed -i 's|  system.stateVersion = "24.11";|  hardware.nvidia.prime = {\n    intelBusId = "PCI:0:2:0";\n    nvidiaBusId = "PCI:1:0:0";\n  };\n  system.stateVersion = "24.11";|' \
+  "$guard/hosts/oldbox/configuration.nix"
+check upgrade-prime-guard "fixture still imports a GPU module" \
+  lacks_line "$guard/hosts/oldbox/oldbox.nix" "modules/gpu/nvidia.nix"
+guarded=$(mktemp -d)/guarded
+PATH="$fakebin:$PATH" SCAFFOLD_BIN="" \
+  bash upgrade.sh --config "$guard" --output "$guarded" --yes --no-build >/dev/null
+gse="$guarded/hosts/oldbox/space-elevator.nix"
+check upgrade-prime-guard "bus IDs were present but the driver was dropped" \
+  grep -qE '^[[:space:]]+gpu\.nvidia[[:space:]]*=[[:space:]]*\{' "$gse"
+check upgrade-prime-guard "the NVIDIA bus ID was lost" has_line "$gse" 'nvidiaBusId = "PCI:1:0:0";'
 echo "OK: PRIME bus IDs imply the NVIDIA driver"
+
+# ── The current layout carries the tree across ──────────────────────
+# Everything in the old tree reaches the output untouched. Only the
+# directories Space Elevator ships are replaced.
+cur=$(mktemp -d)/cur
+SE_GPU=NVIDIA SE_DE="KDE Plasma" SE_TLP=1 SE_OUTDIR="$cur" \
+  MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null
+curse="$cur/hosts/citest/space-elevator.nix"
+
+# Six switches the wizard never reads back, set the way a user would.
+sed -i 's/    gaming.enable = true;/    gaming.enable = false;/' "$curse"
+sed -i 's/      flavor = "mocha";/      flavor = "latte";/' "$curse"
+sed -i 's/      accent = "mauve";/      accent = "teal";/' "$curse"
+sed -i 's|    user.name = "ci";|    user.name = "ci";\n    base.kernel = "zen";\n    network.firewall.allowedTCPPorts = [ 8080 ];|' "$curse"
+sed -i 's|    gpu.nvidia.enable = true;|    gpu.nvidia = {\n      enable = true;\n      driver = "legacy_580";\n    };|' "$curse"
+sed -i 's|    tuning.tlp.enable = true;|    tuning.tlp = {\n      enable = true;\n      chargeThresholds = null;\n    };|' "$curse"
+
+# Things of the user's that live outside the host directory.
+mkdir -p "$cur/modules/local"
+printf '{ ... }: { services.tailscale.enable = true; }\n' > "$cur/modules/local/my-vpn.nix"
+printf '{"nodes":{"root":{}},"root":"root","version":7}\n' > "$cur/flake.lock"
+printf '\n# my own flake comment\n' >> "$cur/flake.nix"
+printf '\n# my own wiring comment\n' >> "$cur/hosts/citest/citest.nix"
+
+# Markers in the files Space Elevator owns; each has to be replaced.
+printf '\n# stale module marker\n' >> "$cur/modules/gpu/nvidia.nix"
+printf '\n# stale default marker\n' >> "$cur/modules/default.nix"
+printf '\n# stale readme marker\n' >> "$cur/README.md"
+printf '\n# stale update marker\n' >> "$cur/update.sh"
+
+git -C "$cur" init -q
+git -C "$cur" add -A
+git -C "$cur" -c user.email=ci@test -c user.name=ci commit -qm "user history"
+curhead=$(git -C "$cur" rev-parse HEAD)
+cp "$curse" "$cur.se-before"
+cp "$cur/hosts/citest/configuration.nix" "$cur.cfg-before"
+
+curup=$(mktemp -d)/curup
+SCAFFOLD_BIN="" bash upgrade.sh --config "$cur" --output "$curup" --yes --no-build >/dev/null
+
+check upgrade-preserve "space-elevator.nix was not carried byte for byte" \
+  cmp -s "$cur.se-before" "$curup/hosts/citest/space-elevator.nix"
+check upgrade-preserve "configuration.nix was not carried byte for byte" \
+  cmp -s "$cur.cfg-before" "$curup/hosts/citest/configuration.nix"
+check upgrade-preserve "flake.nix was not carried" \
+  has_line "$curup/flake.nix" "# my own flake comment"
+check upgrade-preserve "the host wiring file was not carried" \
+  has_line "$curup/hosts/citest/citest.nix" "# my own wiring comment"
+check upgrade-preserve "flake.lock was not carried" \
+  cmp -s "$cur/flake.lock" "$curup/flake.lock"
+check upgrade-preserve "a module directory outside the set was dropped" \
+  cmp -s "$cur/modules/local/my-vpn.nix" "$curup/modules/local/my-vpn.nix"
+check upgrade-preserve "git history was not carried" test -d "$curup/.git"
+check upgrade-preserve "git history is not the user's" \
+  bash -c 'test "$(git -C "$1" rev-parse HEAD 2>/dev/null)" = "$2"' _ "$curup" "$curhead"
+check upgrade-preserve "a Space Elevator module was not replaced" \
+  lacks_line "$curup/modules/gpu/nvidia.nix" "# stale module marker"
+check upgrade-preserve "modules/default.nix was not replaced" \
+  lacks_line "$curup/modules/default.nix" "# stale default marker"
+check upgrade-preserve "README.md was not replaced" \
+  lacks_line "$curup/README.md" "# stale readme marker"
+check upgrade-preserve "update.sh was not replaced" \
+  lacks_line "$curup/update.sh" "# stale update marker"
+echo "OK: the current layout carries the tree across"
+
+# The diff is the only place a template change shows up now, so it has
+# to cover every file that carried over unchanged, plus the module set.
+curdiff="$curup/UPGRADE-REVIEW.diff"
+check upgrade-preserve-diff "diff does not cover space-elevator.nix" \
+  has_line "$curdiff" "space-elevator.nix"
+check upgrade-preserve-diff "diff does not cover configuration.nix" \
+  has_line "$curdiff" "configuration.nix"
+check upgrade-preserve-diff "diff does not cover the host wiring file" \
+  has_line "$curdiff" "citest.nix"
+check upgrade-preserve-diff "diff does not cover the module set" \
+  has_line "$curdiff" "-# stale module marker"
+echo "OK: the review diff covers what was kept"
+
+# The notes are where anything not carried has to be named.
+curnotes="$curup/UPGRADE-NOTES.md"
+check upgrade-preserve-notes "notes do not say the tree carried over unchanged" \
+  has_line "$curnotes" "Carried across unchanged"
+check upgrade-preserve-notes "notes do not mention flake.lock" \
+  has_line "$curnotes" "flake.lock"
+echo "OK: the notes describe what carried over"
+
+# A current-layout host keeps its own stateVersion, so a config the
+# wizard cannot read one from is still upgradable.
+nosv=$(mktemp -d)/nosv
+SE_GPU=Intel SE_DE=GNOME SE_OUTDIR="$nosv" MODULE_SOURCE="$PWD/modules" \
+  bash scaffold.sh >/dev/null
+sed -i '/system\.stateVersion/d' "$nosv/hosts/citest/configuration.nix"
+nosvup=$(mktemp -d)/nosvup
+check upgrade-preserve-nosv "a missing stateVersion stopped the upgrade" \
+  bash -c 'SCAFFOLD_BIN="" bash upgrade.sh --config "$1" --output "$2" --yes --no-build >/dev/null' \
+  _ "$nosv" "$nosvup"
+echo "OK: the current layout does not need a detected stateVersion"
+
+# ── The default output directory ────────────────────────────────────
+# With no --output the new tree is written beside the config, so on a
+# real /etc/nixos the upgrade creates /etc/nixos.new — a directory it
+# has no permission to create, since it runs unprivileged. The fixture
+# stages that with a mode root would ignore, so it only means
+# something as a normal user.
+if [ "$(id -u)" -ne 0 ]; then
+  etc=$(mktemp -d)/etc
+  mkdir -p "$etc"
+  SE_GPU=Intel SE_DE=GNOME SE_OUTDIR="$etc/nixos" MODULE_SOURCE="$PWD/modules" \
+    bash scaffold.sh >/dev/null
+  chmod 555 "$etc"
+  PATH="$fakebin:$PATH" SCAFFOLD_BIN="" \
+    bash upgrade.sh --config "$etc/nixos" --yes --no-build >/dev/null 2>&1 || true
+  check upgrade-default-output "the tree was not written beside the config" \
+    test -f "$etc/nixos.new/hosts/citest/space-elevator.nix"
+  check upgrade-default-output "the switches file did not carry across" \
+    has_line "$etc/nixos.new/hosts/citest/space-elevator.nix" 'user.name = "ci";'
+  check upgrade-default-output "the new tree does not belong to this user" \
+    test -w "$etc/nixos.new"
+  chmod 755 "$etc"
+  echo "OK: the default output directory is created"
+else
+  echo "SKIP: running as root, an unwritable directory cannot be staged"
+fi
+
+# Regenerated trees resolve their inputs fresh, so an old lock must
+# not travel with them.
+oldlock=$(mktemp -d)/oldlock
+old_style_config "$oldlock" gnome amdgpu
+printf '{"nodes":{"root":{}},"root":"root","version":7}\n' > "$oldlock/flake.lock"
+oldlockup=$(mktemp -d)/oldlockup
+SCAFFOLD_BIN="" bash upgrade.sh --config "$oldlock" --output "$oldlockup" --yes --no-build >/dev/null
+check upgrade-old-lock "an old lock was carried into a regenerated tree" \
+  test ! -f "$oldlockup/flake.lock"
+echo "OK: regenerated trees get a fresh lock"
+
+# Hosts other than the one being upgraded ride along with the tree.
+# The non-interactive path picks the host matching this machine, so
+# the fixture names one after it.
+me=$(hostname)
+if [ -n "$me" ] && [ "$me" = "${me##*/}" ]; then
+  multi=$(mktemp -d)/multi
+  SE_HOSTNAME="$me" SE_GPU=Intel SE_DE=GNOME SE_OUTDIR="$multi" \
+    MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null
+  mkdir -p "$multi/hosts/spare"
+  printf '{ ... }: { networking.hostName = "spare"; }\n' > "$multi/hosts/spare/configuration.nix"
+  multiup=$(mktemp -d)/multiup
+  SCAFFOLD_BIN="" bash upgrade.sh --config "$multi" --output "$multiup" --yes --no-build >/dev/null
+  check upgrade-preserve-hosts "another host was dropped" \
+    cmp -s "$multi/hosts/spare/configuration.nix" "$multiup/hosts/spare/configuration.nix"
+  echo "OK: other hosts ride along"
+else
+  echo "SKIP: hostname unusable as a host directory name"
+fi
 
 # Same trap, from the other direction: a machine with no GPU module
 # and no flavors must come back with no GPU module and no flavors.
