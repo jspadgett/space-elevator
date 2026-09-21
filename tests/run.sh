@@ -508,6 +508,42 @@ else
   echo "SKIP: running as root, an unwritable directory cannot be staged"
 fi
 
+# ── An output directory that is already there ───────────────────────
+# /mnt/etc/nixos exists and belongs to root whenever the partitioning
+# was done by hand, and after any earlier run. mkdir -p is happy with
+# a directory that already exists, so the wizard has to decide on
+# writability. Staged with a mode, which root ignores.
+if [ "$(id -u)" -ne 0 ]; then
+  taken=$(mktemp -d)/nixos
+  mkdir -p "$taken"
+  chmod 555 "$taken"
+  PATH="$fakebin:$PATH" SE_GPU=Intel SE_DE=GNOME SE_OUTDIR="$taken" \
+    MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null 2>&1 || true
+  check outdir-taken "nothing was generated into an unwritable directory" \
+    test -f "$taken/flake.nix"
+  check outdir-taken "the generated tree does not belong to this user" \
+    test -w "$taken"
+  chmod -R u+w "$taken" 2>/dev/null || true
+  echo "OK: an unwritable output directory is taken over"
+
+  # Taking the directory itself over says nothing about what is inside
+  # it. Rather than rewrite a tree it was not given, the wizard stops
+  # and names the command that hands the whole thing across.
+  deep=$(mktemp -d)/nixos
+  mkdir -p "$deep/modules"
+  chmod 555 "$deep/modules"
+  deepmsg=$(PATH="$fakebin:$PATH" SE_GPU=Intel SE_DE=GNOME SE_OUTDIR="$deep" \
+    MODULE_SOURCE="$PWD/modules" bash scaffold.sh 2>&1 || true)
+  check outdir-inside "an unwritable subdirectory was not reported" \
+    bash -c 'grep -qF "$1" <<<"$2"' _ "$deep/modules" "$deepmsg"
+  check outdir-inside "the message does not name the command to run" \
+    bash -c 'grep -qF "chown -R" <<<"$1"' _ "$deepmsg"
+  chmod -R u+w "$deep" 2>/dev/null || true
+  echo "OK: an unwritable subdirectory stops the run with instructions"
+else
+  echo "SKIP: running as root, an unwritable directory cannot be staged"
+fi
+
 # Regenerated trees resolve their inputs fresh, so an old lock must
 # not travel with them.
 oldlock=$(mktemp -d)/oldlock
