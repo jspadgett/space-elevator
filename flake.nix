@@ -18,6 +18,7 @@
           text = ''
             MODULE_SOURCE="${./modules}"
             SE_NIXPKGS_REV="${nixpkgs.rev or ""}"
+            SE_ZONEINFO="${pkgs.tzdata}/share/zoneinfo"
             ${builtins.readFile ./scaffold.sh}
           '';
         };

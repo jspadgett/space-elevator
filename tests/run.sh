@@ -150,6 +150,59 @@ check gpu-none "a GPU driver was enabled for a VM" \
   bash -c '! grep -qE "^\s+gpu\." "$1"' _ "$out/hosts/citest/space-elevator.nix"
 echo "OK: GPU variants"
 
+# ── What the answers are allowed to be ──────────────────────────────
+# The timezone lands inside a Nix string in configuration.nix, so a
+# quote in the answer writes settings of its own into the file, and a
+# zone that does not exist evaluates and builds — it shows up as a
+# wrong clock on the installed machine. The packaged wizard carries
+# tzdata; the tests point at whatever copy this machine has.
+
+zoneinfo=""
+for d in "${SE_ZONEINFO:-}" /etc/zoneinfo /usr/share/zoneinfo; do
+  if [ -n "$d" ] && [ -d "$d" ]; then zoneinfo="$d"; break; fi
+done
+
+# The wizard refuses the answer and leaves nothing behind.
+answer_rejected() {
+  local out; out=$(mktemp -d)/cfg
+  env "$1=$2" SE_ZONEINFO="$zoneinfo" SE_GPU=Intel SE_DE=GNOME SE_OUTDIR="$out" \
+    MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null 2>&1 && return 1
+  [ ! -e "$out/flake.nix" ]
+}
+
+# The wizard generates, and the zone reaches the config as given.
+tz_accepted() {
+  local out; out=$(mktemp -d)/cfg
+  SE_TIMEZONE="$1" SE_ZONEINFO="$zoneinfo" SE_GPU=Intel SE_DE=GNOME SE_OUTDIR="$out" \
+    MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null 2>&1 || return 1
+  has_line "$out/hosts/citest/configuration.nix" "time.timeZone = \"$1\";"
+}
+
+check timezone "a quote in the timezone reached the config" \
+  answer_rejected SE_TIMEZONE 'Etc/UTC"; boot.loader.grub.enable = false; x = "'
+check timezone "a path traversal in the timezone was accepted" \
+  answer_rejected SE_TIMEZONE '../../etc/passwd'
+
+if [ -n "$zoneinfo" ]; then
+  check timezone "a zone tzdata does not have was accepted" \
+    answer_rejected SE_TIMEZONE 'Mars/Olympus'
+else
+  echo "SKIP: no zoneinfo on this machine, cannot check the zone exists"
+fi
+
+# Plain names, a signed offset, three components, and hyphens.
+for tz in UTC Etc/GMT+5 America/Argentina/Buenos_Aires America/Port-au-Prince Europe/Berlin; do
+  check timezone "$tz was refused" tz_accepted "$tz"
+done
+
+# Locale and keyboard are already shape-checked; the check has to
+# survive the rewrite.
+check locale "a quote in the locale reached the config" \
+  answer_rejected SE_LOCALE 'en_US.UTF-8"; x = "'
+check keymap "a keyboard layout that is not an XKB code was accepted" \
+  answer_rejected SE_KEYMAP 'us"; x = "'
+echo "OK: timezone, locale and keyboard answers"
+
 # ── Upgrading an existing system ────────────────────────────────────
 # Build a fixture in the OLD import-is-enable layout — the thing real
 # users are upgrading from — and check the upgrade script reads it

@@ -46,6 +46,20 @@ note() { gum style --foreground 3 "$1"; }
 
 die() { gum style --foreground 1 "$1"; exit 1; }
 
+# A zone the tzdata on hand knows about. The packaged wizard carries
+# its own copy and points SE_ZONEINFO at it; run straight from a
+# checkout on a machine with none, the shape of the answer is all
+# there is to go on.
+tz_known() {
+  local dir
+  for dir in "${SE_ZONEINFO:-}" /etc/zoneinfo /usr/share/zoneinfo; do
+    if [ -n "$dir" ] && [ -d "$dir" ]; then
+      if [ -f "$dir/$1" ]; then return 0; else return 1; fi
+    fi
+  done
+  return 0
+}
+
 # Make a directory exist and belong to this user. The target may sit
 # on a root-owned filesystem — /etc/nixos.new beside a real config,
 # /mnt/etc/nixos in the installer — and mkdir -p succeeds on a
@@ -263,17 +277,42 @@ if [ -z "$KB_DEFAULT" ] && command -v localectl >/dev/null 2>&1; then
 fi
 KB_DEFAULT="${KB_DEFAULT:-us}"
 
-if [ "$NONINT" = 1 ]; then
-  TIMEZONE="$TZ_DEFAULT"
-  LOCALE="$LOC_DEFAULT"
-  KB_LAYOUT="$KB_DEFAULT"
-else
-  TIMEZONE=$(gum input --header "Timezone:" --value "$TZ_DEFAULT")
-  LOCALE=$(gum input --header "Locale:" --value "$LOC_DEFAULT")
-  KB_LAYOUT=$(gum input --header "Keyboard layout (XKB code, e.g. us, de, fr):" --value "$KB_DEFAULT")
-fi
-[[ "$LOCALE" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "Invalid locale: $LOCALE"
-[[ "$KB_LAYOUT" =~ ^[a-z]+(,[a-z]+)*$ ]] || die "Invalid keyboard layout: $KB_LAYOUT"
+# Each answer goes into a Nix string further down, and the install is
+# well underway by the time they are asked — on the guided path the
+# disk has already been partitioned and formatted. A bad answer asks
+# again rather than ending the run.
+while :; do
+  if [ "$NONINT" = 1 ]; then
+    TIMEZONE="$TZ_DEFAULT"
+  else
+    TIMEZONE=$(gum input --header "Timezone:" --value "$TZ_DEFAULT")
+  fi
+  [[ "$TIMEZONE" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]] && tz_known "$TIMEZONE" && break
+  [ "$NONINT" = 1 ] && die "Invalid timezone: $TIMEZONE"
+  note "Timezone must be one tzdata knows, like Europe/Berlin, America/Port-au-Prince or UTC."
+done
+
+while :; do
+  if [ "$NONINT" = 1 ]; then
+    LOCALE="$LOC_DEFAULT"
+  else
+    LOCALE=$(gum input --header "Locale:" --value "$LOC_DEFAULT")
+  fi
+  [[ "$LOCALE" =~ ^[A-Za-z0-9_.@-]+$ ]] && break
+  [ "$NONINT" = 1 ] && die "Invalid locale: $LOCALE"
+  note "Locale looks like en_US.UTF-8 — letters, digits, and _ . @ -."
+done
+
+while :; do
+  if [ "$NONINT" = 1 ]; then
+    KB_LAYOUT="$KB_DEFAULT"
+  else
+    KB_LAYOUT=$(gum input --header "Keyboard layout (XKB code, e.g. us, de, fr):" --value "$KB_DEFAULT")
+  fi
+  [[ "$KB_LAYOUT" =~ ^[a-z]+(,[a-z]+)*$ ]] && break
+  [ "$NONINT" = 1 ] && die "Invalid keyboard layout: $KB_LAYOUT"
+  note "Keyboard layout is an XKB code — us, de, fr; comma-separated for more than one."
+done
 
 OUT_DEFAULT="./nixos-config"
 [ "$INSTALL_MODE" = true ] && OUT_DEFAULT="/mnt/etc/nixos"
