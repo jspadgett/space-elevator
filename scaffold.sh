@@ -44,17 +44,32 @@ header() {
 
 note() { gum style --foreground 3 "$1"; }
 
-die() { gum style --foreground 1 "$1"; exit 1; }
+# Refusals go to stderr: this script is run by upgrade.sh with its
+# stdout redirected, and a reason nobody sees is an exit code on its
+# own.
+die() { gum style --foreground 1 "$1" >&2; exit 1; }
 
-# A zone the tzdata on hand knows about. The packaged wizard carries
-# its own copy and points SE_ZONEINFO at it; run straight from a
-# checkout on a machine with none, the shape of the answer is all
-# there is to go on.
+# Leading and trailing whitespace off an answer.
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  printf '%s' "${s%"${s##*[![:space:]]}"}"
+}
+
+# A zone the tzdata on hand knows about — a TZif file, not one of the
+# data files tzdata keeps beside them. The packaged wizard carries its
+# own copy and points SE_ZONEINFO at it; run straight from a checkout
+# on a machine with none, the shape of the answer is all there is to
+# go on.
 tz_known() {
   local dir
   for dir in "${SE_ZONEINFO:-}" /etc/zoneinfo /usr/share/zoneinfo; do
     if [ -n "$dir" ] && [ -d "$dir" ]; then
-      if [ -f "$dir/$1" ]; then return 0; else return 1; fi
+      if [ -f "$dir/$1" ] && [ "$(head -c 4 "$dir/$1" 2>/dev/null)" = "TZif" ]; then
+        return 0
+      else
+        return 1
+      fi
     fi
   done
   return 0
@@ -287,6 +302,7 @@ while :; do
   else
     TIMEZONE=$(gum input --header "Timezone:" --value "$TZ_DEFAULT")
   fi
+  TIMEZONE="$(trim "$TIMEZONE")"
   [[ "$TIMEZONE" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]] && tz_known "$TIMEZONE" && break
   [ "$NONINT" = 1 ] && die "Invalid timezone: $TIMEZONE"
   note "Timezone must be one tzdata knows, like Europe/Berlin, America/Port-au-Prince or UTC."
@@ -298,6 +314,7 @@ while :; do
   else
     LOCALE=$(gum input --header "Locale:" --value "$LOC_DEFAULT")
   fi
+  LOCALE="$(trim "$LOCALE")"
   [[ "$LOCALE" =~ ^[A-Za-z0-9_.@-]+$ ]] && break
   [ "$NONINT" = 1 ] && die "Invalid locale: $LOCALE"
   note "Locale looks like en_US.UTF-8 — letters, digits, and _ . @ -."
@@ -309,6 +326,7 @@ while :; do
   else
     KB_LAYOUT=$(gum input --header "Keyboard layout (XKB code, e.g. us, de, fr):" --value "$KB_DEFAULT")
   fi
+  KB_LAYOUT="$(trim "$KB_LAYOUT")"
   [[ "$KB_LAYOUT" =~ ^[a-z]+(,[a-z]+)*$ ]] && break
   [ "$NONINT" = 1 ] && die "Invalid keyboard layout: $KB_LAYOUT"
   note "Keyboard layout is an XKB code — us, de, fr; comma-separated for more than one."

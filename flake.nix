@@ -33,6 +33,7 @@
           excludeShellChecks = [ "SC2016" ];
           text = ''
             SCAFFOLD_BIN="${mkScaffold system}/bin/space-elevator"
+            SE_ZONEINFO="${pkgs.tzdata}/share/zoneinfo"
             ${builtins.readFile ./upgrade.sh}
           '';
         };

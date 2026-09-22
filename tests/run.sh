@@ -178,6 +178,14 @@ tz_accepted() {
   has_line "$out/hosts/citest/configuration.nix" "time.timeZone = \"$1\";"
 }
 
+# The answer as typed, and the zone it should end up as.
+tz_accepted_trimmed() {
+  local out; out=$(mktemp -d)/cfg
+  SE_TIMEZONE="$1" SE_ZONEINFO="$zoneinfo" SE_GPU=Intel SE_DE=GNOME SE_OUTDIR="$out" \
+    MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null 2>&1 || return 1
+  has_line "$out/hosts/citest/configuration.nix" "time.timeZone = \"$2\";"
+}
+
 check timezone "a quote in the timezone reached the config" \
   answer_rejected SE_TIMEZONE 'Etc/UTC"; boot.loader.grub.enable = false; x = "'
 check timezone "a path traversal in the timezone was accepted" \
@@ -201,6 +209,28 @@ check locale "a quote in the locale reached the config" \
   answer_rejected SE_LOCALE 'en_US.UTF-8"; x = "'
 check keymap "a keyboard layout that is not an XKB code was accepted" \
   answer_rejected SE_KEYMAP 'us"; x = "'
+check timezone "the refusal was printed to stdout, where a caller can lose it" \
+  bash -c 'out=$(mktemp -d)/cfg
+    msg=$(SE_TIMEZONE=Mars/Olympus SE_ZONEINFO="$1" SE_GPU=Intel SE_DE=GNOME SE_OUTDIR="$out" \
+      MODULE_SOURCE="$PWD/modules" bash scaffold.sh 2>/dev/null) || true
+    [ -z "$msg" ]' _ "$zoneinfo"
+check timezone "the refusal was not printed to stderr" \
+  bash -c 'out=$(mktemp -d)/cfg
+    msg=$(SE_TIMEZONE=Mars/Olympus SE_ZONEINFO="$1" SE_GPU=Intel SE_DE=GNOME SE_OUTDIR="$out" \
+      MODULE_SOURCE="$PWD/modules" bash scaffold.sh 2>&1 >/dev/null) || true
+    grep -qF "Mars/Olympus" <<<"$msg"' _ "$zoneinfo"
+
+# Answers arrive with whatever the terminal handed over.
+check timezone "a zone with spaces around it was refused" tz_accepted_trimmed '  Europe/Berlin  ' 'Europe/Berlin'
+
+# Everything in a zoneinfo directory is not a zone: tzdata ships
+# leapseconds, zone.tab and tzdata.zi beside the TZif files.
+if [ -n "$zoneinfo" ] && [ -f "$zoneinfo/leapseconds" ]; then
+  check timezone "a tzdata data file was taken for a zone" \
+    answer_rejected SE_TIMEZONE 'leapseconds'
+else
+  echo "SKIP: no leapseconds file to check the zone is really a zone"
+fi
 echo "OK: timezone, locale and keyboard answers"
 
 # ── Upgrading an existing system ────────────────────────────────────
@@ -534,6 +564,66 @@ check upgrade-preserve-nosv "a missing stateVersion stopped the upgrade" \
   bash -c 'SCAFFOLD_BIN="" bash upgrade.sh --config "$1" --output "$2" --yes --no-build >/dev/null' \
   _ "$nosv" "$nosvup"
 echo "OK: the current layout does not need a detected stateVersion"
+
+# ── A zone the old config has and tzdata doesn't ────────────────────
+# The wizard refuses such a zone, and the upgrade hands it straight
+# over. On the current layout the file holding it is carried across
+# untouched, so the upgrade goes through and the notes point at it; on
+# the older layouts the value would be written into a regenerated
+# config, so the run stops and says where to fix it.
+
+badtz=$(mktemp -d)/badtz
+SE_GPU=Intel SE_DE=GNOME SE_OUTDIR="$badtz" MODULE_SOURCE="$PWD/modules" \
+  bash scaffold.sh >/dev/null
+sed -i 's|time.timeZone = "[^"]*";|time.timeZone = "Mars/Olympus";|' \
+  "$badtz/hosts/citest/configuration.nix"
+badtzup=$(mktemp -d)/badtzup
+SE_ZONEINFO="$zoneinfo" SCAFFOLD_BIN="" \
+  bash upgrade.sh --config "$badtz" --output "$badtzup" --yes --no-build >/dev/null 2>&1 || true
+
+check upgrade-bad-tz "the upgrade stopped on a zone in a file it carries across" \
+  test -f "$badtzup/hosts/citest/space-elevator.nix"
+check upgrade-bad-tz "the carried config did not keep the zone as it was" \
+  has_line "$badtzup/hosts/citest/configuration.nix" 'time.timeZone = "Mars/Olympus";'
+check upgrade-bad-tz "the notes do not name the zone that has to be fixed" \
+  has_line "$badtzup/UPGRADE-NOTES.md" "Mars/Olympus"
+echo "OK: a zone tzdata does not know is reported, not fatal, on the current layout"
+
+# The old layout regenerates the file, so the bad value would be
+# written fresh — that one stops.
+oldtz=$(mktemp -d)/oldtz
+old_style_config "$oldtz" gnome intel-gpu
+sed -i 's|time.timeZone = "[^"]*";|time.timeZone = "Mars/Olympus";|' \
+  "$oldtz/hosts/oldbox/configuration.nix"
+oldtzup=$(mktemp -d)/oldtzup
+oldtzmsg=$(SE_ZONEINFO="$zoneinfo" SCAFFOLD_BIN="" \
+  bash upgrade.sh --config "$oldtz" --output "$oldtzup" --yes --no-build 2>&1 || true)
+
+check upgrade-bad-tz-old "the upgrade generated a config from a zone tzdata does not know" \
+  test ! -e "$oldtzup/flake.nix"
+check upgrade-bad-tz-old "the message does not name the zone" \
+  bash -c 'grep -qF "Mars/Olympus" <<<"$1"' _ "$oldtzmsg"
+check upgrade-bad-tz-old "the message does not name the file to fix" \
+  bash -c 'grep -qF "configuration.nix" <<<"$1"' _ "$oldtzmsg"
+echo "OK: a zone tzdata does not know stops a regenerating upgrade"
+
+# Whatever the wizard refuses, the upgrade has to repeat — it runs the
+# wizard with its output redirected, so a silent exit is all the
+# caller would otherwise see.
+faked=$(mktemp -d)/scaffold
+cat > "$faked" <<'EOF'
+#!/usr/bin/env bash
+echo "the wizard could not do the thing" >&2
+exit 1
+EOF
+chmod +x "$faked"
+failmsg=$(SCAFFOLD_BIN="$faked" bash upgrade.sh --config "$badtz" \
+  --output "$(mktemp -d)/failup" --yes --no-build 2>&1 || true)
+check upgrade-scaffold-failure "the wizard's message was swallowed" \
+  bash -c 'grep -qF "the wizard could not do the thing" <<<"$1"' _ "$failmsg"
+check upgrade-scaffold-failure "nothing said which step failed" \
+  bash -c 'grep -qiE "generat|wizard" <<<"$1"' _ "$failmsg"
+echo "OK: a failing wizard is reported with its own message"
 
 # ── The default output directory ────────────────────────────────────
 # With no --output the new tree is written beside the config, so on a

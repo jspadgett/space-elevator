@@ -72,7 +72,26 @@ fi
 header() { gum style --border rounded --border-foreground 6 --padding "0 2" --margin "1 0" "$1"; }
 note()   { gum style --foreground 3 "$1"; }
 good()   { gum style --foreground 2 "$1"; }
-die()    { gum style --foreground 1 "$1"; exit 1; }
+die()    { gum style --foreground 1 "$1" >&2; exit 1; }
+
+# A zone the tzdata on hand knows about — a TZif file, not one of the
+# data files tzdata keeps beside them. The packaged upgrade carries
+# its own copy and points SE_ZONEINFO at it; run straight from a
+# checkout on a machine with none, the shape of the answer is all
+# there is to go on.
+tz_known() {
+  local dir
+  for dir in "${SE_ZONEINFO:-}" /etc/zoneinfo /usr/share/zoneinfo; do
+    if [ -n "$dir" ] && [ -d "$dir" ]; then
+      if [ -f "$dir/$1" ] && [ "$(head -c 4 "$dir/$1" 2>/dev/null)" = "TZif" ]; then
+        return 0
+      else
+        return 1
+      fi
+    fi
+  done
+  return 0
+}
 
 confirm() {
   [ "$ASSUME_YES" = 1 ] && return 0
@@ -167,6 +186,30 @@ had() { grep -qE "$1" <<<"$HAYSTACK"; }
 
 STATE_VERSION="$(extract 'system\.stateVersion = "([^"]+)"' "$HAYSTACK")"
 TIMEZONE="$(extract 'time\.timeZone = "([^"]+)"' "$HAYSTACK")"
+
+# The wizard refuses a zone tzdata does not know, so a config carrying
+# one would stop this run when the wizard is called. The current
+# layout keeps its own configuration.nix, so the value only has to
+# come out of the wizard's answers and be named in the notes. The
+# older layouts write that file fresh from what detection found, so
+# the value would be baked into the new config — that one stops here,
+# at the file it came from, before anything is generated.
+TIMEZONE_BAD=""
+TZ_FILE=""
+TZ_FILE_REL="hosts/$HOSTNAME/configuration.nix"
+if [ -n "$TIMEZONE" ] && ! tz_known "$TIMEZONE"; then
+  TIMEZONE_BAD="$TIMEZONE"
+  TIMEZONE=""
+  TZ_FILE="$(grep -lF "time.timeZone = \"$TIMEZONE_BAD\"" \
+    "$CONFIG_DIR"/hosts/"$HOSTNAME"/*.nix 2>/dev/null | head -1)"
+  [ -n "$TZ_FILE" ] || TZ_FILE="$OLD_CONFIGURATION"
+  TZ_FILE_REL="${TZ_FILE#"$CONFIG_DIR"/}"
+  if [ "$CURRENT_LAYOUT" != 1 ]; then
+    die "\"$TIMEZONE_BAD\" in $TZ_FILE is not a timezone this system's tzdata knows.
+This upgrade writes that file fresh, so the value has to be a real zone first.
+Fix it there — Europe/Berlin, America/Port-au-Prince, UTC — and run this again."
+  fi
+fi
 USERNAME="$(extract 'users\.users\.([A-Za-z0-9_-]+) = \{' "$HAYSTACK")"
 [ -n "$USERNAME" ] || USERNAME="$(extract 'user\.name = "([^"]+)"' "$HAYSTACK")"
 [ -n "$USERNAME" ] || USERNAME="${SUDO_USER:-$USER}"
@@ -307,7 +350,8 @@ fi
 # of the replaced module set; on the older layouts it is the output.
 REFERENCE_DIR="$(mktemp -d)/reference"
 
-SE_NONINTERACTIVE=1 \
+SCAFFOLD_LOG="$(mktemp)"
+if ! SE_NONINTERACTIVE=1 \
 SE_HOSTNAME="$HOSTNAME" \
 SE_USERNAME="$USERNAME" \
 SE_TIMEZONE="${TIMEZONE:-}" \
@@ -319,7 +363,12 @@ SE_TLP="$TLP" \
 SE_PRIME="$PRIME" \
 SE_FLAVORS="$FLAVORS" \
 SE_OUTDIR="$REFERENCE_DIR" \
-  "${SCAFFOLD[@]}" >/dev/null
+  "${SCAFFOLD[@]}" >"$SCAFFOLD_LOG" 2>&1
+then
+  die "Generating the new configuration failed. The wizard said:
+
+$(cat "$SCAFFOLD_LOG")"
+fi
 
 # What Space Elevator ships and therefore owns. Everything else in the
 # tree belongs to whoever wrote it.
@@ -461,6 +510,17 @@ done
     echo "Because your flake.lock carried over, the inputs are still"
     echo "pinned where they were. Run \`./update.sh\` when you want to move"
     echo "them."
+    if [ -n "$TIMEZONE_BAD" ]; then
+      echo
+      echo "## Fix this one by hand"
+      echo
+      echo "\`time.timeZone = \"$TIMEZONE_BAD\"\` in"
+      echo "$TZ_FILE_REL is not a zone this system's"
+      echo "tzdata knows. It carried across as it was, so this machine keeps"
+      echo "whatever clock it has been running on. Set it to a real zone —"
+      echo "Europe/Berlin, America/Port-au-Prince, UTC — when you next edit"
+      echo "that file."
+    fi
   else
     echo "## Carried across for you"
     echo
