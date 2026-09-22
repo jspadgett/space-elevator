@@ -9,6 +9,7 @@
 #     theming are standard and not optional)
 #   SE_TLP=1|0 to override the battery check
 #   SE_HANDHELD=1|0 to override handheld detection (DMI product name)
+#   SE_OSK=1|0 to force or suppress the on-screen keyboard (ISO only)
 #   SE_PRIME=1 to set up PRIME offload from this machine's detected
 #     bus IDs (non-interactive defaults to off, since the machine
 #     running the wizard may not be the target)
@@ -56,6 +57,18 @@ ensure_writable_dir() {
     sudo mkdir -p "$1"
     sudo chown "$(id -u):$(id -g)" "$1"
     sudo chmod u+rwx "$1"
+  fi
+}
+
+# Text prompts. On the installer ISO a connected gamepad leaves
+# /run/pad-keys/pad in place, and pad-type, an on-screen keyboard the
+# pad can drive, stands in for gum input. SE_OSK=1|0 overrides that.
+ask() {  # ask HEADER [gum input flags...]
+  if [ "${SE_OSK:-$( [ -e /run/pad-keys/pad ] && echo 1 || echo 0 )}" = 1 ] \
+     && command -v pad-type >/dev/null; then
+    pad-type --header "$1" "${@:2}"
+  else
+    gum input --header "$1" "${@:2}"
   fi
 }
 
@@ -148,7 +161,7 @@ if [ "$NONINT" != 1 ] && [ "$IS_ISO" = true ] \
       else
         PICK=$(pick_one "Install to which disk? (EVERYTHING on it will be erased)" "${CHOICES[@]}")
         TARGET_DISK="/dev/${PICK%% *}"
-        CONFIRM=$(gum input --header "This will PERMANENTLY ERASE $TARGET_DISK. Type ERASE to confirm:")
+        CONFIRM=$(ask "This will PERMANENTLY ERASE $TARGET_DISK. Type ERASE to confirm:")
         if [ "$CONFIRM" = "ERASE" ]; then
           case "$TARGET_DISK" in *[0-9]) P="p" ;; *) P="" ;; esac
           DISK_TOUCHED=true
@@ -199,7 +212,7 @@ while :; do
   if [ "$NONINT" = 1 ]; then
     HOSTNAME="$HOST_DEFAULT"
   else
-    HOSTNAME=$(gum input --header "Hostname for this machine:" --value "$HOST_DEFAULT")
+    HOSTNAME=$(ask "Hostname for this machine:" --value "$HOST_DEFAULT")
   fi
   [[ "$HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] && break
   [ "$NONINT" = 1 ] && die "Invalid hostname: $HOSTNAME"
@@ -210,7 +223,7 @@ while :; do
   if [ "$NONINT" = 1 ]; then
     USERNAME="${SE_USERNAME:-user}"
   else
-    USERNAME=$(gum input --header "Primary username:" --placeholder "e.g. alice")
+    USERNAME=$(ask "Primary username:" --placeholder "e.g. alice")
   fi
   [[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] && break
   [ "$NONINT" = 1 ] && die "Invalid username: $USERNAME"
@@ -222,9 +235,9 @@ PASSWORD_HASH=""
 PW="${SE_PASSWORD:-}"
 if [ "$NONINT" != 1 ]; then
   while :; do
-    PW=$(gum input --password --header "Login password for $USERNAME (leave blank to use 'changeme'):")
+    PW=$(ask "Login password for $USERNAME (leave blank to use 'changeme'):" --password)
     [ -z "$PW" ] && break
-    PW2=$(gum input --password --header "Confirm password:")
+    PW2=$(ask "Confirm password:" --password)
     [ "$PW" = "$PW2" ] && break
     note "Passwords didn't match — try again, or leave blank to skip."
   done
@@ -269,9 +282,9 @@ if [ "$NONINT" = 1 ]; then
   LOCALE="$LOC_DEFAULT"
   KB_LAYOUT="$KB_DEFAULT"
 else
-  TIMEZONE=$(gum input --header "Timezone:" --value "$TZ_DEFAULT")
-  LOCALE=$(gum input --header "Locale:" --value "$LOC_DEFAULT")
-  KB_LAYOUT=$(gum input --header "Keyboard layout (XKB code, e.g. us, de, fr):" --value "$KB_DEFAULT")
+  TIMEZONE=$(ask "Timezone:" --value "$TZ_DEFAULT")
+  LOCALE=$(ask "Locale:" --value "$LOC_DEFAULT")
+  KB_LAYOUT=$(ask "Keyboard layout (XKB code, e.g. us, de, fr):" --value "$KB_DEFAULT")
 fi
 [[ "$LOCALE" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "Invalid locale: $LOCALE"
 [[ "$KB_LAYOUT" =~ ^[a-z]+(,[a-z]+)*$ ]] || die "Invalid keyboard layout: $KB_LAYOUT"
@@ -281,7 +294,7 @@ OUT_DEFAULT="./nixos-config"
 if [ "$NONINT" = 1 ]; then
   OUTDIR="${SE_OUTDIR:-$OUT_DEFAULT}"
 else
-  OUTDIR=$(gum input --header "Output directory:" --value "$OUT_DEFAULT")
+  OUTDIR=$(ask "Output directory:" --value "$OUT_DEFAULT")
 fi
 if [ -d "$OUTDIR" ] && [ -n "$(ls -A "$OUTDIR" 2>/dev/null)" ]; then
   prompt_confirm "$OUTDIR exists and is not empty. Overwrite generated files?" y || {
