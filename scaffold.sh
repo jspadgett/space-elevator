@@ -8,6 +8,7 @@
 #   SE_FLAVORS (comma list of: development,kdeconnect — gaming and
 #     theming are standard and not optional)
 #   SE_TLP=1|0 to override the battery check
+#   SE_HANDHELD=1|0 to override handheld detection (DMI product name)
 #   SE_PRIME=1 to set up PRIME offload from this machine's detected
 #     bus IDs (non-interactive defaults to off, since the machine
 #     running the wizard may not be the target)
@@ -347,6 +348,33 @@ else
   fi
 fi
 
+# Handheld gaming PCs identify themselves in DMI. These are the
+# product names Handheld Daemon matches, so a hit here corresponds to
+# device support on the installed system. ASUS reports the marketing
+# name with the model inside it ("ROG Ally X RC72LA_RC72LA_…"); Valve,
+# Lenovo, GPD and MSI report the bare model.
+DMI_VENDOR=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)
+DMI_PRODUCT=$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)
+HANDHELD_DETECTED=""
+case "$DMI_PRODUCT" in
+  Jupiter|Galileo)                          HANDHELD_DETECTED="Steam Deck" ;;
+  *RC71L*|*RC72LA*|*RC73X*|*RC73Y*)         HANDHELD_DETECTED="ROG Ally" ;;
+  83E1|83L3|83N0|83N1|83N6|83Q2|83Q3)       HANDHELD_DETECTED="Legion Go" ;;
+  G1617-*|G1618-*)                          HANDHELD_DETECTED="GPD Win" ;;
+  MS-1T41|MS-1T42|MS-1T52|MS-1T8K)          HANDHELD_DETECTED="MSI Claw" ;;
+  *)
+    case "$DMI_VENDOR" in
+      AYANEO*|AYADEVICE*|ONE-NETBOOK*|AOKZOE*) HANDHELD_DETECTED="$DMI_VENDOR handheld" ;;
+    esac ;;
+esac
+
+IS_HANDHELD=false
+if [ "$NONINT" = 1 ]; then
+  [ "${SE_HANDHELD:-$( [ -n "$HANDHELD_DETECTED" ] && echo 1 || echo 0 )}" = 1 ] && IS_HANDHELD=true
+elif [ -n "$HANDHELD_DETECTED" ]; then
+  gum confirm "Detected $HANDHELD_DETECTED — set up as a handheld gaming PC?" && IS_HANDHELD=true
+fi
+
 # A battery means a laptop. Plain globbing, not compgen: the minimal
 # bash this ships with is built without programmable completion, so
 # compgen isn't there and the check silently found nothing.
@@ -358,13 +386,17 @@ for battery in /sys/class/power_supply/BAT*; do
   fi
 done
 
+# Handheld Daemon owns TDP profiles and charge limits on a handheld,
+# so TLP is offered on laptops only.
 USE_TLP=false
-if [ "$NONINT" = 1 ]; then
-  # SE_TLP overrides the battery check either way, so a script that
-  # knows what the machine had can say so.
-  [ "${SE_TLP:-$( [ "$IS_LAPTOP" = true ] && echo 1 || echo 0 )}" = 1 ] && USE_TLP=true
-elif [ "$IS_LAPTOP" = true ]; then
-  gum confirm "Battery detected (laptop) — include TLP power management?" && USE_TLP=true
+if [ "$IS_HANDHELD" = false ]; then
+  if [ "$NONINT" = 1 ]; then
+    # SE_TLP overrides the battery check either way, so a script that
+    # knows what the machine had can say so.
+    [ "${SE_TLP:-$( [ "$IS_LAPTOP" = true ] && echo 1 || echo 0 )}" = 1 ] && USE_TLP=true
+  elif [ "$IS_LAPTOP" = true ]; then
+    gum confirm "Battery detected (laptop) — include TLP power management?" && USE_TLP=true
+  fi
 fi
 
 # On an installed NixOS system we can capture the real hardware config
@@ -751,6 +783,13 @@ EOF
     # to spare it — set chargeThresholds = null; to charge fully.
     tuning.tlp.enable = true;
 EOF
+  elif [ "$IS_HANDHELD" = true ]; then
+    cat <<EOF
+    # Handheld gaming PC${HANDHELD_DETECTED:+ ($HANDHELD_DETECTED)}.
+    # TDP profiles and charge limits belong to Handheld Daemon,
+    # so TLP stays off:
+    # tuning.tlp.enable = true;
+EOF
   else
     cat <<'EOF'
     # Laptop power management (conflicts with the desktop's own
@@ -790,9 +829,23 @@ EOF
     # games need.
     # Not a gaming machine after all? gaming.enable = false;
     gaming.enable = true;
+EOF
+  if [ "$IS_HANDHELD" = true ]; then
+    cat <<'EOF'
+
+    # Adds the SteamOS-style Big Picture session to the login screen.
+    gaming.steam.gamescopeSession = true;
+
+    # There when you want them:
+EOF
+  else
+    cat <<'EOF'
 
     # There when you want them:
     #   gaming.steam.gamescopeSession = true;  # SteamOS-style Big Picture session at login
+EOF
+  fi
+  cat <<'EOF'
     #   gaming.streaming.enable = true;        # Sunshine — stream to a Moonlight client
     #   gaming.rgb.enable = true;              # OpenRGB lighting control
     #   gaming.controllers.mice = true;        # Piper, for configuring gaming mice
