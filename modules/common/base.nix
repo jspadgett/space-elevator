@@ -1,5 +1,6 @@
 # modules/common/base.nix
-# Generic core: flakes, kernel choice, unfree, polkit, firmware updates.
+# Generic core: flakes, kernel choice, unfree, polkit, firmware and
+# firmware updates.
 # No inputs dependency.
 { config, lib, pkgs, ... }:
 let
@@ -21,7 +22,7 @@ in
       defaultText = lib.literalExpression "config.spaceElevator.enable";
       description = ''
         Core system settings: flakes, the kernel, unfree packages,
-        polkit, firmware updates and periodic TRIM. Effectively
+        polkit, device firmware and its updates, and periodic TRIM. Effectively
         mandatory — the rest of the module set assumes it.
       '';
     };
@@ -61,6 +62,11 @@ in
     # Distro-standard housekeeping
     services.fwupd.enable = true;   # firmware updates (fwupdmgr)
     services.fstrim.enable = true;  # periodic TRIM; no-op on non-SSDs
+
+    # linux-firmware: the blobs Wi-Fi, Bluetooth, GPUs and laptop and
+    # handheld audio amps load at boot. nixos-generate-config makes CPU
+    # microcode updates follow this switch as well.
+    hardware.enableRedistributableFirmware = true;
 
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
 

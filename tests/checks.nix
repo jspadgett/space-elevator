@@ -237,6 +237,11 @@ in
       "the baseline runs the newest mainline kernel"
       (c: c.spaceElevator.base.kernel == "latest");
 
+  firmware-is-standard =
+    expect "firmware-is-standard" { spaceElevator.enable = true; }
+      "the baseline ships redistributable firmware, so Wi-Fi and audio work off the installer"
+      (c: c.hardware.enableRedistributableFirmware);
+
   kernel-zen = evalCheck "kernel-zen" {
     spaceElevator = {
       enable = true;
