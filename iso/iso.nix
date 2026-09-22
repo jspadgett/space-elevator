@@ -3,7 +3,10 @@
 # The image lands in result/iso/.
 { lib, pkgs, modulesPath, space-elevator, ... }:
 {
-  imports = [ "${modulesPath}/installer/cd-dvd/installation-cd-minimal.nix" ];
+  imports = [
+    "${modulesPath}/installer/cd-dvd/installation-cd-minimal.nix"
+    ./modules/pad-keys.nix
+  ];
 
   # ── Branding ──────────────────────────────────────────────────────
   # mkForce: the installer base sets the image name at normal priority
@@ -40,6 +43,8 @@
 
     <<< Space Elevator installer — the wizard starts automatically >>>
     Type 'space-elevator' to relaunch it at any time.
+    Gamepads work: D-pad moves, A selects, B backs out, and text
+    prompts show an on-screen keyboard.
   '';
 
   # The wizard owns the whole journey (Wi-Fi, disks, install), so it
