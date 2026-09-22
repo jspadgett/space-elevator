@@ -109,7 +109,7 @@ spaceElevator = {
 | **Desktop plumbing** | `desktop.*` | audio · bluetooth · printing · fonts · packages (Firefox, Vesktop, the app set) · gvfs · flatpak |
 | **Standard with any desktop** | `gaming.*`, `desktop.theming` | steam · gamemode · launchers · controllers · sysctl · Catppuccin |
 | **Desktop (pick one)** | `desktop.plasma` / `gnome` / `cosmic` / `hyprland` | session, login manager, app store and native apps |
-| **Detected** | `gpu.amd` / `gpu.intel` / `gpu.nvidia`, `tuning.tlp` | drivers, PRIME offload on hybrid laptops, laptop power management |
+| **Detected** | `gpu.amd` / `gpu.intel` / `gpu.nvidia`, `tuning.tlp`, `gaming.handheld` | drivers, PRIME offload on hybrid laptops, laptop power management, Handheld Daemon and boot-to-Big-Picture on handheld PCs (ROG Ally, Legion Go, Steam Deck…) |
 | **Opt-in** | `gaming.streaming`, `gaming.rgb`, `gaming.controllers.mice`, `gaming.steam.gamescopeSession` | Sunshine · OpenRGB · Piper · Big Picture session |
 | **Flavors (optional)** | `development`, `desktop.kdeconnect` | docker + virtualisation · KDE Connect (included with Plasma) |
 

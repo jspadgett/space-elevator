@@ -141,7 +141,8 @@ echo "OK: no-flavor config"
 
 out=$(SE_GPU=AMD SE_DE="KDE Plasma" SE_FLAVORS="" SE_HANDHELD=1 SE_TLP=1 generate)
 se="$out/hosts/citest/space-elevator.nix"
-check handheld "Big Picture session not enabled" is_enabled "$se" 'gaming\.steam\.gamescopeSession'
+check handheld "handheld support not enabled" is_enabled "$se" 'gaming\.handheld\.enable'
+check handheld "Big Picture session offered on top of handheld" lacks_line "$se" "gaming.steam.gamescopeSession"
 check handheld "TLP enabled on a handheld" is_not_enabled "$se" 'tuning\.tlp\.enable'
 check handheld "TLP not offered as a comment" has_line "$se" "# tuning.tlp.enable = true;"
 check handheld "handheld comment missing" has_line "$se" "# Handheld gaming PC."
@@ -150,7 +151,8 @@ echo "OK: handheld config"
 out=$(SE_GPU=AMD SE_DE="KDE Plasma" SE_FLAVORS="" SE_HANDHELD=0 SE_TLP=1 generate)
 se="$out/hosts/citest/space-elevator.nix"
 check laptop "TLP lost when handheld is declined" is_enabled "$se" 'tuning\.tlp\.enable'
-check laptop "Big Picture enabled on a laptop" is_not_enabled "$se" 'gaming\.steam\.gamescopeSession'
+check laptop "handheld support enabled on a laptop" is_not_enabled "$se" 'gaming\.handheld\.enable'
+check laptop "Big Picture session no longer offered" has_line "$se" "#   gaming.steam.gamescopeSession = true;"
 echo "OK: laptop config"
 
 # ── KDE Connect: part of Plasma, a choice everywhere else ───────────

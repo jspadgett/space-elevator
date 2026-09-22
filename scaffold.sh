@@ -833,8 +833,13 @@ EOF
   if [ "$IS_HANDHELD" = true ]; then
     cat <<'EOF'
 
-    # Adds the SteamOS-style Big Picture session to the login screen.
-    gaming.steam.gamescopeSession = true;
+    # Handheld gaming PC: Handheld Daemon drives the built-in gamepad,
+    # the vendor buttons' overlay, TDP presets and charge limits, and
+    # the machine boots straight into the Big Picture session. Exit
+    # Steam from its power menu to reach the login screen and the
+    # desktop. Prefer to land on the login screen every boot?
+    #   gaming.handheld.autoLogin = false;
+    gaming.handheld.enable = true;
 
     # There when you want them:
 EOF

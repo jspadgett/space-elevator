@@ -17,6 +17,7 @@
     ./sysctl.nix
     ./rgb.nix
     ./streaming.nix
+    ./handheld.nix
   ];
 
   options.spaceElevator.gaming.enable = lib.mkOption {
@@ -30,8 +31,9 @@
       desktop to play on; sets the default for every option under
       spaceElevator.gaming.
 
-      Game streaming (streaming) and RGB control (rgb) are the
-      exceptions — they stay off until asked for.
+      Game streaming (streaming), RGB control (rgb) and handheld
+      support (handheld) are the exceptions — they stay off until
+      asked for.
     '';
   };
 }

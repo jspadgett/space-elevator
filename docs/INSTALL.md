@@ -12,6 +12,14 @@ you care about before starting.
 - A USB stick (4 GB or larger — it gets erased too)
 - The computer you're installing on, with internet access
 - 30 GB or more of disk you're willing to wipe
+- On a handheld (ROG Ally, Legion Go, Steam Deck…): a USB keyboard or
+  a dock with one. The built-in gamepad can't type. With the graphical
+  NixOS ISO below, the touchscreen and its on-screen keyboard get you
+  through in a pinch; the Space Elevator ISO is text-only, so there a
+  keyboard is required. On an Ally, hold Volume Down while pressing
+  Power to enter the BIOS and boot the stick from there; on a Deck the
+  same combination gives a boot menu. The wizard recognises the machine
+  and sets up Handheld Daemon and boot-to-Big-Picture on its own.
 
 ## Step 1 — Download NixOS and flash the USB
 
@@ -19,6 +27,14 @@ Download the **Graphical ISO (GNOME)** from
 [nixos.org/download](https://nixos.org/download/). The graphical one is
 easier for this guide even though we won't use its built-in installer —
 it gives you a normal desktop with Wi-Fi settings and a terminal.
+
+There is also a **Space Elevator ISO** attached to each
+[release](https://github.com/jspadgett/space-elevator/releases). It
+boots straight into the wizard on a text console — no desktop, no
+mouse, no on-screen keyboard — so it suits a machine with a keyboard
+plugged in. With it, skip Step 4's `nix run` line: the wizard is
+already running when the console appears, and typing `space-elevator`
+brings it back.
 
 Flash it to the USB stick with [balenaEtcher](https://etcher.balena.io/)
 (Windows/Mac/Linux, point-and-click) or, on Linux:
