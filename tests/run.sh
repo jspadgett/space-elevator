@@ -41,6 +41,17 @@ lacks_line() { ! grep -qF -- "$2" "$1"; }
 is_enabled() { grep -qE "^[[:space:]]+$2[[:space:]]*=[[:space:]]*true;" "$1"; }
 is_not_enabled() { ! is_enabled "$1" "$2"; }
 
+# Every .nix file under a directory parses. The redirect belongs to
+# nix-instantiate, not to `check` — on `check` it swallows the FAIL
+# line along with the output nobody wants.
+parse_nix_under() {
+  local f
+  while read -r f; do
+    check parse "$f does not parse as Nix" \
+      bash -c 'nix-instantiate --parse "$1" >/dev/null' _ "$f"
+  done < <(find "$1" -name '*.nix')
+}
+
 # ── Every desktop, with the optional flavors turned on ─────────────
 
 for de in "KDE Plasma" "GNOME" "COSMIC" "Hyprland"; do
@@ -611,10 +622,18 @@ echo "OK: upgrade invents nothing"
 
 if command -v nix-instantiate >/dev/null 2>&1; then
   out=$(SE_GPU=NVIDIA SE_DE="KDE Plasma" SE_FLAVORS="development" generate)
-  while read -r f; do
-    check parse "$f does not parse as Nix" nix-instantiate --parse "$f" >/dev/null
-  done < <(find "$out" -name '*.nix')
+  parse_nix_under "$out"
   echo "OK: generated Nix parses"
+
+  # The parse check has to name the file it failed on. Nix prints its
+  # own error to stderr either way; what is at stake is the FAIL line
+  # that says which check failed and on what.
+  broken=$(mktemp -d)
+  printf '{ = ;\n' > "$broken/broken.nix"
+  brokenout=$( (parse_nix_under "$broken") 2>/dev/null || true )
+  check harness "a file that does not parse was counted but never named" \
+    bash -c 'grep -q "FAIL (parse)" <<<"$1"' _ "$brokenout"
+  echo "OK: a failing parse says so"
 else
   echo "SKIP: nix-instantiate not available, skipping parse check"
 fi
