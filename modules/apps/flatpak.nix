@@ -4,6 +4,7 @@
 { config, lib, ... }:
 let
   cfg = config.spaceElevator.apps.flatpak;
+  flatpak = "${config.services.flatpak.package}/bin/flatpak";
 in
 {
   options.spaceElevator.apps.flatpak.enable = lib.mkOption {
@@ -18,12 +19,32 @@ in
 
   config = lib.mkIf cfg.enable {
     services.flatpak.enable = true;
+
+    # Adding Flathub downloads its repo metadata, so it needs the
+    # network. The timer starts the service once per boot, outside the
+    # boot transaction: an offline first boot reaches the desktop
+    # without waiting on it, and the service keeps retrying until the
+    # remote is added. Once Flathub exists, later runs exit at the
+    # ExecCondition without touching the network.
+    systemd.timers.flatpak-repo = {
+      wantedBy = [ "timers.target" ];
+      timerConfig.OnBootSec = "15s";
+    };
+
     systemd.services.flatpak-repo = {
-      wantedBy = [ "multi-user.target" ];
-      path = [ ];
-      script = ''
-        /run/current-system/sw/bin/flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-      '';
+      description = "Add the Flathub remote to Flatpak";
+      wants = [ "network-online.target" ];
+      after = [ "network-online.target" ];
+      # Retry indefinitely: StartLimitIntervalSec=0 stops systemd from
+      # giving up after a burst of failures.
+      startLimitIntervalSec = 0;
+      serviceConfig = {
+        Type = "oneshot";
+        ExecCondition = "/bin/sh -c '! ${flatpak} remotes --system --columns=name | grep -qx flathub'";
+        ExecStart = "${flatpak} remote-add --system --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo";
+        Restart = "on-failure";
+        RestartSec = "1min";
+      };
     };
   };
 }

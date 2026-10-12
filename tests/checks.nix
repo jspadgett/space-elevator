@@ -337,6 +337,22 @@ in
       && c.fonts.packages != [ ]
     );
 
+  flathub-retries-until-online =
+    expect "flathub-retries-until-online" (desktop "gnome")
+      "Flathub is added by a timer-started service that waits for the network and retries"
+      (
+        c:
+        let
+          svc = c.systemd.services.flatpak-repo;
+        in
+        c.systemd.timers.flatpak-repo.wantedBy == [ "timers.target" ]
+        && svc.wantedBy == [ ]
+        && lib.elem "network-online.target" svc.after
+        && lib.elem "network-online.target" svc.wants
+        && svc.serviceConfig.Restart == "on-failure"
+        && svc.startLimitIntervalSec == 0
+      );
+
   plumbing-is-overridable =
     expect "plumbing-is-overridable"
       {

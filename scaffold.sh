@@ -1153,10 +1153,30 @@ if prompt_confirm "Initialize a git repository in $OUTDIR now? (flakes require t
   gum style --foreground 2 "Git repo initialized and files staged."
 fi
 
+# Copy the connections NetworkManager saved on the installer (the Wi-Fi
+# joined in step 1, with its password) into the installed system, so it
+# is online on first boot. NM_CONNECTIONS_SRC / NM_CONNECTIONS_ROOT point
+# the copy elsewhere for tests.
+copy_network_connections() {
+  local src="${NM_CONNECTIONS_SRC:-/etc/NetworkManager/system-connections}"
+  local dest="${NM_CONNECTIONS_ROOT:-/mnt}/etc/NetworkManager/system-connections"
+  local files=()
+  [ -d "$src" ] || return 0
+  mapfile -t files < <(sudo find "$src" -maxdepth 1 -type f -name '*.nmconnection')
+  [ "${#files[@]}" -gt 0 ] || return 0
+  if sudo install -d -m 0700 "$dest" \
+      && sudo install -m 0600 "${files[@]}" "$dest/"; then
+    note "Copied ${#files[@]} network connection(s) from the installer, so the new system goes online at first boot."
+  else
+    note "Could not copy the installer's network connections; join your network again after the first boot."
+  fi
+}
+
 if [ "$INSTALL_MODE" = true ]; then
   if gum confirm "Begin the installation now? (downloads and installs your desktop — 10 to 30 minutes)"; then
     # --no-root-passwd: root stays locked; your user has sudo via wheel
     if sudo nixos-install --flake "$OUTDIR#$HOSTNAME" --no-root-passwd; then
+      copy_network_connections
       gum style \
         --border double --border-foreground 2 \
         --padding "1 3" --margin "1 0" --align center \

@@ -620,6 +620,46 @@ check upgrade-bare "invented a flavor" is_not_enabled "$rb" 'development\.enable
 check upgrade-bare "invented KDE Connect" is_not_enabled "$rb" 'desktop\.kdeconnect\.enable'
 echo "OK: upgrade invents nothing"
 
+# ── Installer Wi-Fi carries over to the installed system ─────────────
+# The install step needs nixos-install and a mounted disk, so this runs
+# the copy function on its own: pulled out of scaffold.sh, with sudo and
+# note stubbed, against temporary directories.
+
+nmfn=$(awk '/^copy_network_connections\(\) \{/,/^\}/' scaffold.sh)
+check nm-copy "copy_network_connections not found in scaffold.sh" test -n "$nmfn"
+nmsrc=$(mktemp -d)
+nmroot=$(mktemp -d)
+printf '[wifi]\nssid=home\n' > "$nmsrc/home.nmconnection"
+printf '[ethernet]\n' > "$nmsrc/wired.nmconnection"
+printf 'not a connection\n' > "$nmsrc/README"
+nmout=$(
+  sudo() { "$@"; }
+  note() { echo "$*"; }
+  eval "$nmfn"
+  NM_CONNECTIONS_SRC="$nmsrc" NM_CONNECTIONS_ROOT="$nmroot" copy_network_connections
+)
+nmdest="$nmroot/etc/NetworkManager/system-connections"
+check nm-copy "Wi-Fi connection not copied" test -f "$nmdest/home.nmconnection"
+check nm-copy "wired connection not copied" test -f "$nmdest/wired.nmconnection"
+check nm-copy "copied a file that is not a connection" test ! -e "$nmdest/README"
+check nm-copy "connection readable by others" \
+  bash -c 'test "$(stat -c %a "$1")" = 600' _ "$nmdest/home.nmconnection"
+check nm-copy "connections directory readable by others" \
+  bash -c 'test "$(stat -c %a "$1")" = 700' _ "$nmdest"
+check nm-copy "copy not reported" bash -c 'grep -q "Copied 2 network" <<<"$1"' _ "$nmout"
+
+nmempty=$(mktemp -d)
+nmroot2=$(mktemp -d)
+(
+  sudo() { "$@"; }
+  note() { echo "$*"; }
+  eval "$nmfn"
+  NM_CONNECTIONS_SRC="$nmempty" NM_CONNECTIONS_ROOT="$nmroot2" copy_network_connections
+)
+check nm-copy "created a connections directory with nothing to copy" \
+  test ! -e "$nmroot2/etc/NetworkManager"
+echo "OK: installer network connections carry over"
+
 # ── The generated file is valid Nix ─────────────────────────────────
 # (Evaluating the whole config needs nixpkgs; parsing does not.)
 
