@@ -20,6 +20,7 @@
   pkgs,
   nixpkgs,
   system,
+  iso,
 }:
 let
   inherit (nixpkgs) lib;
@@ -674,6 +675,20 @@ in
         users.users.alice.isNormalUser = true;
       }
       "spaceElevator.gaming.handheld.autoLogin has no effect";
+
+  # ── Installer ISO ─────────────────────────────────────────────────
+  # The installer has to be able to install onto ZFS, so its kernel
+  # always carries a ZFS module built for it, whichever kernel the
+  # fallback in iso/iso.nix picked.
+  iso-kernel-has-zfs =
+    let
+      c = iso.config;
+      kernel = c.boot.kernelPackages.kernel.version;
+      zfsModule = lib.findFirst (p: lib.hasPrefix "zfs-kernel-" (p.name or "")) null c.boot.extraModulePackages;
+    in
+    report "iso-kernel-has-zfs"
+      (c.boot.supportedFilesystems.zfs && zfsModule != null && lib.hasSuffix "-${kernel}" zfsModule.name)
+      "FAILED: the installer ISO's kernel (${kernel}) has no ZFS module built for it.";
 
   # ── Housekeeping options actually reach their services ────────────
   tuning-options-apply =

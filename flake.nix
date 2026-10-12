@@ -73,6 +73,7 @@
         inherit nixpkgs;
         system = "x86_64-linux";
         pkgs = nixpkgs.legacyPackages.x86_64-linux;
+        iso = self.nixosConfigurations.space-elevator-iso;
       };
 
       nixosConfigurations.space-elevator-iso = nixpkgs.lib.nixosSystem {

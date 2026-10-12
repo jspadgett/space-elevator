@@ -17,6 +17,21 @@
   # release-asset limit.
   isoImage.squashfsCompression = "zstd -Xcompression-level 19";
 
+  # ── Kernel ────────────────────────────────────────────────────────
+  # The newest mainline kernel, the same one an install boots by
+  # default (base.kernel = "latest"). Drivers for recent hardware, such
+  # as handheld Wi-Fi chips, land in mainline first, so this keeps the
+  # installer's hardware support level with the installed system's.
+  # The installer keeps ZFS, an out-of-tree module that can lag a new
+  # kernel; when nixpkgs marks ZFS broken on the newest kernel, the
+  # installer boots the release's LTS kernel instead.
+  boot.kernelPackages =
+    let
+      latest = pkgs.linuxPackages_latest;
+      zfsBuilds = !latest.${pkgs.zfs.kernelModuleAttribute}.meta.broken;
+    in
+    if zfsBuilds then latest else pkgs.linuxPackages;
+
   # ── The wizard, preinstalled and offline-capable ──────────────────
   # space-elevator carries its own modules and runtime tools in its
   # closure, so the wizard works before the network is even up.
