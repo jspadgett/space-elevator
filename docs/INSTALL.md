@@ -19,7 +19,7 @@ you care about before starting.
   keyboard is required. On an Ally, hold Volume Down while pressing
   Power to enter the BIOS and boot the stick from there; on a Deck the
   same combination gives a boot menu. The wizard recognises the machine
-  and sets up Handheld Daemon and boot-to-Big-Picture on its own.
+  and sets up Handheld Daemon and a Big Picture login session on its own.
 
 ## Step 1 — Download NixOS and flash the USB
 
