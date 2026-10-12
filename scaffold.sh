@@ -847,11 +847,9 @@ EOF
     cat <<'EOF'
 
     # Handheld gaming PC: Handheld Daemon drives the built-in gamepad,
-    # the vendor buttons' overlay, TDP presets and charge limits, and
-    # the machine boots straight into the Big Picture session. Exit
-    # Steam from its power menu to reach the login screen and the
-    # desktop. Prefer to land on the login screen every boot?
-    #   gaming.handheld.autoLogin = false;
+    # the vendor buttons' overlay, TDP presets and charge limits. The
+    # login screen offers a "Steam Big Picture" session next to the
+    # desktop.
     gaming.handheld.enable = true;
 
     # There when you want them:

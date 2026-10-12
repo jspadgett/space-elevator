@@ -135,7 +135,7 @@ check no-flavor "development module not vendored" test -f "$out/modules/developm
 check no-flavor "TLP module not vendored" test -f "$out/modules/tuning/tlp.nix"
 echo "OK: no-flavor config"
 
-# ── Handheld: Big Picture on, TLP off even when asked for ────────────
+# ── Handheld: hhd on, TLP off even when asked for ────────────────────
 # CI hardware never matches the DMI table, so this exercises the
 # SE_HANDHELD override, which is the same path a script takes.
 
@@ -146,6 +146,7 @@ check handheld "Big Picture session offered on top of handheld" lacks_line "$se"
 check handheld "TLP enabled on a handheld" is_not_enabled "$se" 'tuning\.tlp\.enable'
 check handheld "TLP not offered as a comment" has_line "$se" "# tuning.tlp.enable = true;"
 check handheld "handheld comment missing" has_line "$se" "# Handheld gaming PC."
+check handheld "handheld config still mentions autoLogin" lacks_line "$se" "autoLogin"
 echo "OK: handheld config"
 
 out=$(SE_GPU=AMD SE_DE="KDE Plasma" SE_FLAVORS="" SE_HANDHELD=0 SE_TLP=1 generate)

@@ -6,7 +6,7 @@
 # Off by default — it runs a daemon that takes over the gamepad, TDP
 # and power profiles, which is only right on hardware that has them.
 # The wizard turns it on when it detects one of these machines.
-{ config, lib, ... }:
+{ config, options, lib, ... }:
 let
   cfg = config.spaceElevator.gaming.handheld;
   user = config.spaceElevator.user.name;
@@ -22,19 +22,14 @@ in
         appears to Steam as a controller (a DualSense Edge by default),
         the vendor buttons open its overlay, and it owns TDP presets,
         fan curves, charge limits and RGB. Also adds the Big Picture
-        session and, unless autoLogin is off, boots straight into it.
+        session to the login screen's session menu.
       '';
     };
 
     autoLogin = lib.mkOption {
       type = lib.types.bool;
-      default = true;
-      description = ''
-        Boot straight into the Big Picture session as
-        spaceElevator.user.name, the way a console does. Exit Steam
-        from its power menu to reach the login screen and pick the
-        desktop instead. Off means the login screen comes up first.
-      '';
+      visible = false;
+      description = "No effect; see the warning it raises.";
     };
 
     acpiCall = lib.mkOption {
@@ -50,6 +45,14 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    warnings = lib.optional options.spaceElevator.gaming.handheld.autoLogin.isDefined ''
+      spaceElevator.gaming.handheld.autoLogin has no effect: handhelds
+      start at the login screen, with the "Steam Big Picture" session in
+      its session menu. Remove the line from settings.nix. To log in
+      automatically anyway, set services.displayManager.autoLogin and
+      services.displayManager.defaultSession = "steam" yourself.
+    '';
+
     assertions = [
       {
         assertion = user != null;
@@ -62,15 +65,7 @@ in
         assertion = config.spaceElevator.gaming.steam.enable;
         message = ''
           spaceElevator.gaming.handheld needs spaceElevator.gaming.steam:
-          the Big Picture session it boots into is Steam's.
-        '';
-      }
-      {
-        assertion = cfg.autoLogin -> config.spaceElevator.gaming.steam.gamescopeSession;
-        message = ''
-          spaceElevator.gaming.handheld.autoLogin boots into the Big
-          Picture session, which gaming.steam.gamescopeSession = false
-          removed. Turn one of the two around.
+          the Big Picture session it adds is Steam's.
         '';
       }
       {
@@ -107,13 +102,5 @@ in
     services.power-profiles-daemon.enable = false;
 
     spaceElevator.gaming.steam.gamescopeSession = lib.mkDefault true;
-
-    services.displayManager = lib.mkIf (cfg.autoLogin && user != null) {
-      autoLogin = {
-        enable = true;
-        inherit user;
-      };
-      defaultSession = "steam";
-    };
   };
 }

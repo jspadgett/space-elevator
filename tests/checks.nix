@@ -637,6 +637,44 @@ in
       "charge thresholds can be dropped for batteries that lack them"
       (c: !(c.services.tlp.settings ? START_CHARGE_THRESH_BAT0) && !c.services.power-profiles-daemon.enable);
 
+  # ── Handheld ──────────────────────────────────────────────────────
+  handheld-starts-at-login-screen =
+    expect "handheld-starts-at-login-screen"
+      {
+        spaceElevator = {
+          enable = true;
+          user.name = "alice";
+          desktop.plasma.enable = true;
+          gaming.enable = true;
+          gaming.handheld.enable = true;
+        };
+        users.users.alice.isNormalUser = true;
+      }
+      "a handheld offers the Big Picture session at the login screen without logging in on its own"
+      (
+        c:
+        c.services.handheld-daemon.enable
+        && c.programs.steam.gamescopeSession.enable
+        && !c.services.displayManager.autoLogin.enable
+      );
+
+  handheld-autologin-is-gone =
+    expectWarning "handheld-autologin-is-gone"
+      {
+        spaceElevator = {
+          enable = true;
+          user.name = "alice";
+          desktop.plasma.enable = true;
+          gaming.enable = true;
+          gaming.handheld = {
+            enable = true;
+            autoLogin = true;
+          };
+        };
+        users.users.alice.isNormalUser = true;
+      }
+      "spaceElevator.gaming.handheld.autoLogin has no effect";
+
   # ── Housekeeping options actually reach their services ────────────
   tuning-options-apply =
     expect "tuning-options-apply"

@@ -52,10 +52,10 @@ in
       default = false;
       example = true;
       description = ''
-        Add a "Steam Big Picture" session to the login screen: the
-        machine boots straight into a SteamOS-style console interface
-        instead of a desktop. Meant for a TV or a handheld; on a
-        normal desktop you probably want the desktop.
+        Add a "Steam Big Picture" session to the login screen's session
+        menu: a SteamOS-style console interface instead of a desktop.
+        Meant for a TV or a handheld; the desktop session stays the
+        default.
       '';
     };
   };
