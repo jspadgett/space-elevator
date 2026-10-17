@@ -10,13 +10,20 @@
 # and which features were switched on. Then it builds — without
 # touching the running system — and only switches if you say so.
 #
+# Configs from before Space Elevator was a flake input carry their own
+# copy of the modules. The upgrade swaps that copy for the input, so
+# from then on ./update.sh moves the modules along with everything else.
+#
 # Nothing is deleted. The old configuration is moved aside, and the
 # previous system generation stays in the boot menu either way.
 #
 # The long-hand version of what this does is docs/UPGRADING.md.
 #
-# SCAFFOLD_BIN is injected by flake.nix; the fallback covers dev runs.
+# SCAFFOLD_BIN, MODULE_SOURCE and SE_SELF_REV are injected by
+# flake.nix; the fallbacks cover dev runs.
 set -euo pipefail
+SE_SELF_REV="${SE_SELF_REV:-}"
+SE_FLAKE_URL="${SE_FLAKE_URL:-github:jspadgett/space-elevator/stable}"
 
 CONFIG_DIR="/etc/nixos"
 OUTPUT_DIR=""
@@ -92,12 +99,13 @@ ensure_writable_dir() {
 }
 
 # The generator, with its vendored modules.
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -n "${SCAFFOLD_BIN:-}" ]; then
   SCAFFOLD=("$SCAFFOLD_BIN")
 else
-  SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
   SCAFFOLD=(bash "$SELF_DIR/scaffold.sh")
 fi
+MODULE_SOURCE="${MODULE_SOURCE:-$SELF_DIR/modules}"
 
 # ── Read the existing configuration ─────────────────────────────────
 
@@ -139,6 +147,16 @@ OLD_HARDWARE="$HOST_DIR/hardware-configuration.nix"
 # from what detection can find.
 CURRENT_LAYOUT=0
 [ -f "$HOST_DIR/space-elevator.nix" ] && CURRENT_LAYOUT=1
+
+# The categories Space Elevator ships under modules/. A current-layout
+# config that still has them is carrying its own copy; this upgrade
+# replaces that copy with the space-elevator flake input.
+SE_MODULE_DIRS=(apps common desktop development gaming gpu network tuning)
+VENDORED=0
+if [ "$CURRENT_LAYOUT" = 1 ] && [ -f "$CONFIG_DIR/modules/default.nix" ] \
+   && ! grep -qE '^[[:space:]]*space-elevator([[:space:]]*=|\.url)' "$CONFIG_DIR/flake.nix"; then
+  VENDORED=1
+fi
 
 # Everything the old config says about itself, in one haystack. This
 # reads both layouts: the old one imported module files, the current
@@ -264,7 +282,7 @@ if [ "$CURRENT_LAYOUT" = 1 ]; then
     "" \
     "host            $HOSTNAME" \
     "configuration   carried across unchanged" \
-    "module set      replaced with this release" \
+    "module set      $( [ "$VENDORED" = 1 ] && echo "your copy replaced by the space-elevator input" || echo "already an input; ./update.sh moves it" )" \
     "stateVersion    ${STATE_VERSION:-as written in your config}" \
     "password        as written in your config"
 else
@@ -322,20 +340,11 @@ SE_OUTDIR="$REFERENCE_DIR" \
   "${SCAFFOLD[@]}" >/dev/null
 
 # What Space Elevator ships and therefore owns. Everything else in the
-# tree belongs to whoever wrote it.
-SE_OWNED=(
-  modules/apps
-  modules/common
-  modules/desktop
-  modules/development
-  modules/gaming
-  modules/gpu
-  modules/network
-  modules/tuning
-  modules/default.nix
-  README.md
-  update.sh
-)
+# tree belongs to whoever wrote it. The module categories are on the
+# list so an old vendored copy is removed: the reference tree has none,
+# because its modules come from the flake input.
+SE_OWNED=(README.md update.sh modules/default.nix)
+for d in "${SE_MODULE_DIRS[@]}"; do SE_OWNED+=("modules/$d"); done
 
 ensure_writable_dir "$OUTPUT_DIR"
 
@@ -348,8 +357,52 @@ if [ "$CURRENT_LAYOUT" = 1 ]; then
       cp -a "$REFERENCE_DIR/$owned" "$OUTPUT_DIR/$owned"
     fi
   done
+  # Only the user's own modules can be left; an empty modules/ is just
+  # what the vendored copy left behind.
+  rmdir "$OUTPUT_DIR/modules" 2>/dev/null || true
 else
   cp -a "$REFERENCE_DIR/." "$OUTPUT_DIR/"
+fi
+
+# ── From a vendored copy to the flake input ─────────────────────────
+# Two small edits to files that are otherwise the user's own, made by
+# pattern so everything around them survives: the host imports the
+# input's module set instead of ../../modules, and flake.nix gains the
+# input itself. Anything that doesn't look the way the wizard wrote it
+# stops the upgrade with instructions rather than a guess.
+if [ "$VENDORED" = 1 ]; then
+  NEW_HOST_FILE="$OUTPUT_DIR/hosts/$HOSTNAME/$HOSTNAME.nix"
+  if ! grep -qE '^[[:space:]]*\.\./\.\./modules[[:space:]]*$' "$NEW_HOST_FILE" 2>/dev/null; then
+    die "Expected hosts/$HOSTNAME/$HOSTNAME.nix to import ../../modules on a line of its own.
+Replace that import with inputs.space-elevator.nixosModules.default by hand,
+or follow docs/UPGRADING.md. Nothing outside $OUTPUT_DIR was touched."
+  fi
+  sed -i -E 's|^([[:space:]]*)\.\./\.\./modules[[:space:]]*$|\1inputs.space-elevator.nixosModules.default|' "$NEW_HOST_FILE"
+
+  NEW_FLAKE="$OUTPUT_DIR/flake.nix"
+  if ! grep -qE '^[[:space:]]*nixpkgs\.url[[:space:]]*=' "$NEW_FLAKE"; then
+    die "Expected a nixpkgs.url line in flake.nix to add the space-elevator input beside.
+Add it by hand (see docs/UPGRADING.md). Nothing outside $OUTPUT_DIR was touched."
+  fi
+  INPUT_BLOCK="$(mktemp)"
+  {
+    echo '    # The modules. The stable branch only ever points at a Space'
+    echo '    # Elevator release, and ./update.sh moves it forward together with'
+    echo '    # everything else below.'
+    echo '    space-elevator = {'
+    echo "      url = \"$SE_FLAKE_URL\";"
+    echo '      inputs.nixpkgs.follows = "nixpkgs";'
+    echo '    };'
+    echo
+  } > "$INPUT_BLOCK"
+  # Before the first nixpkgs.url line, once.
+  awk -v block="$INPUT_BLOCK" '
+    BEGIN { while ((getline line < block) > 0) text = text line "\n" }
+    !done && /^[[:space:]]*nixpkgs\.url[[:space:]]*=/ { printf "%s", text; done = 1 }
+    { print }
+  ' "$NEW_FLAKE" > "$NEW_FLAKE.tmp"
+  mv "$NEW_FLAKE.tmp" "$NEW_FLAKE"
+  rm -f "$INPUT_BLOCK"
 fi
 
 NEW_HOST_DIR="$OUTPUT_DIR/hosts/$HOSTNAME"
@@ -419,8 +472,16 @@ if [ "$CURRENT_LAYOUT" = 1 ]; then
       diff -u "$CONFIG_DIR/$rel" "$REFERENCE_DIR/$rel" || true
       echo
     done
-    echo "── modules/ — yours, then this release ──"
-    diff -ru "$CONFIG_DIR/modules" "$REFERENCE_DIR/modules" || true
+    if [ "$VENDORED" = 1 ]; then
+      # Your copy against this release. Anything on the - side that
+      # you wrote yourself is not carried across with the copy.
+      echo "── modules/ — your copy, then this release ──"
+      for d in "${SE_MODULE_DIRS[@]}"; do
+        [ -e "$CONFIG_DIR/modules/$d" ] || continue
+        diff -ru "$CONFIG_DIR/modules/$d" "$MODULE_SOURCE/$d" || true
+      done
+      diff -u "$CONFIG_DIR/modules/default.nix" "$MODULE_SOURCE/default.nix" || true
+    fi
   } > "$DIFF_FILE" 2>/dev/null
 else
   diff -u "$OLD_CONFIGURATION" "$NEW_CONFIGURATION" > "$DIFF_FILE" 2>/dev/null || true
@@ -444,23 +505,39 @@ done
     echo "else you keep there. Your switches in"
     echo "hosts/$HOSTNAME/space-elevator.nix are exactly as you left them."
     echo
-    echo "Replaced with this release:"
-    echo
-    echo "- modules/ — the eight Space Elevator categories and default.nix"
-    echo "- README.md and update.sh"
-    echo
-    echo "Anything else under modules/ is yours and was left alone."
+    if [ "$VENDORED" = 1 ]; then
+      echo "## Space Elevator is now a flake input"
+      echo
+      echo "This config used to carry its own copy of the modules, which"
+      echo "nothing could update. That copy is gone; the modules now come"
+      echo "from the \`space-elevator\` input in flake.nix, pinned in"
+      echo "flake.lock, and \`./update.sh\` moves them to each new release"
+      echo "together with nixpkgs and everything else. Two lines changed to"
+      echo "do it:"
+      echo
+      echo "- flake.nix gained the \`space-elevator\` input"
+      echo "- hosts/$HOSTNAME/$HOSTNAME.nix imports"
+      echo "  \`inputs.space-elevator.nixosModules.default\` instead of"
+      echo "  \`../../modules\`"
+      echo
+      echo "Anything else under modules/ is yours and was left alone. If you"
+      echo "had edited one of Space Elevator's own modules, that edit went"
+      echo "with the copy: the review diff shows it on its - side. Put it in"
+      echo "a module of your own and import it from hosts/$HOSTNAME/$HOSTNAME.nix."
+    else
+      echo "Replaced with this release: README.md and update.sh."
+    fi
     echo
     echo "## Worth your eyes"
     echo
     echo "\`UPGRADE-REVIEW.diff\` sets each of your host files against what"
-    echo "the wizard writes today, then your old modules/ against the new"
-    echo "one. None of it has been applied — it is there so you can pick"
-    echo "up anything you want."
+    echo "the wizard writes today$( [ "$VENDORED" = 1 ] && echo ", then your copy of the modules against this release" )."
+    echo "None of it has been applied — it is there so you can pick up"
+    echo "anything you want."
     echo
-    echo "Because your flake.lock carried over, the inputs are still"
-    echo "pinned where they were. Run \`./update.sh\` when you want to move"
-    echo "them."
+    echo "Your flake.lock carried over, so nixpkgs and the other inputs"
+    echo "are still pinned where they were. From now on \`./update.sh\`"
+    echo "moves all of them, Space Elevator included."
   else
     echo "## Carried across for you"
     echo
@@ -479,6 +556,9 @@ done
     echo
     echo "- flake.lock — the inputs resolve fresh, so this upgrade moves"
     echo "  them. Your old lock is in the backup beside this directory."
+    echo "- modules/ — Space Elevator's modules now come from the"
+    echo "  \`space-elevator\` flake input, so \`./update.sh\` keeps them"
+    echo "  current along with everything else."
     echo "- the git history — the new tree starts its own; yours stays"
     echo "  with the backup."
     if [ "${#OTHER_HOSTS[@]}" -gt 0 ]; then
@@ -530,6 +610,17 @@ fi
 
 header "Building (nothing is activated yet)"
 note "This is where the downloading happens. A failure here leaves your running system completely untouched."
+
+# Pin the input to exactly the modules this upgrade was made from —
+# the ones the review diff compared against. The lock still remembers
+# the stable branch, so ./update.sh moves on from here.
+if [ -n "$SE_SELF_REV" ] && grep -q 'space-elevator' "$OUTPUT_DIR/flake.nix"; then
+  nix --extra-experimental-features "nix-command flakes" flake lock "$OUTPUT_DIR" \
+    --override-input space-elevator "${SE_FLAKE_URL%/*}/$SE_SELF_REV" \
+    || die "Couldn't fetch Space Elevator $SE_SELF_REV. Your system is unchanged; check the network and re-run."
+  # Flakes in a git tree only see tracked files.
+  git -C "$OUTPUT_DIR" add flake.lock 2>/dev/null || true
+fi
 
 if ! nixos-rebuild build --flake "$OUTPUT_DIR#$HOSTNAME"; then
   die "Build failed. Your system is unchanged. Fix what it reported in $OUTPUT_DIR and re-run with --config $CONFIG_DIR."

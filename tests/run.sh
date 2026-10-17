@@ -34,6 +34,14 @@ generate() {
 }
 
 has_line() { grep -qF -- "$2" "$1"; }
+
+# The space-elevator input block starts above the first nixpkgs.url line.
+input_before_nixpkgs() {
+  local s n
+  s=$(grep -n 'space-elevator = {' "$1" | head -1 | cut -d: -f1)
+  n=$(grep -nE '^[[:space:]]*nixpkgs\.url' "$1" | head -1 | cut -d: -f1)
+  [ -n "$s" ] && [ -n "$n" ] && [ "$s" -lt "$n" ]
+}
 lacks_line() { ! grep -qF -- "$2" "$1"; }
 
 # An option set to true on its own line — not one of the commented-out
@@ -74,14 +82,24 @@ for de in "KDE Plasma" "GNOME" "COSMIC" "Hyprland"; do
   check "$de" "update.sh not executable" test -x "$out/update.sh"
   check "$de" "git repo not initialized" test -d "$out/.git"
 
-  # The complete module set is vendored, byte for byte
-  check "$de" "vendored modules differ from source" diff -r modules "$out/modules"
+  # The module set arrives as a flake input, not as a copy
+  check "$de" "modules were vendored instead of taken from the input" test ! -e "$out/modules"
+  check "$de" "space-elevator input missing" has_line "$out/flake.nix" "space-elevator = {"
+  check "$de" "space-elevator input does not follow the stable branch" \
+    has_line "$out/flake.nix" 'url = "github:jspadgett/space-elevator/stable";'
+  check "$de" "space-elevator does not share nixpkgs" \
+    has_line "$out/flake.nix" 'inputs.nixpkgs.follows = "nixpkgs";'
 
   # The host imports the module set and its switches, not a list of files
-  check "$de" "host does not import the module set" has_line "$host" "../../modules"
+  check "$de" "host does not import the module set" \
+    has_line "$host" "inputs.space-elevator.nixosModules.default"
   check "$de" "host does not import space-elevator.nix" has_line "$host" "./space-elevator.nix"
-  check "$de" "host still imports individual modules" \
-    lacks_line "$host" "../../modules/"
+  check "$de" "host still imports a vendored copy" lacks_line "$host" "../../modules"
+
+  # update.sh hands over to the newest release's updater
+  check "$de" "update.sh does not run the packaged updater" \
+    has_line "$out/update.sh" "github:jspadgett/space-elevator/stable#update"
+  check "$de" "update.sh does not name its host" has_line "$out/update.sh" "--host citest"
 
   # Answers became options
   check "$de" "wrong nixpkgs pin" has_line "$out/flake.nix" "nixos-26.05"
@@ -130,9 +148,8 @@ check no-flavor "performance kernel not offered" has_line "$se" 'base.kernel = "
 check no-flavor "development enabled without the flavor" is_not_enabled "$se" 'development\.enable'
 check no-flavor "development not offered as a comment" has_line "$se" "# development.enable = true;"
 check no-flavor "TLP not offered as a comment" has_line "$se" "# tuning.tlp.enable = true;"
-# The modules are all vendored even when unused — that is the point
-check no-flavor "development module not vendored" test -f "$out/modules/development/docker.nix"
-check no-flavor "TLP module not vendored" test -f "$out/modules/tuning/tlp.nix"
+check no-flavor "catppuccin not pinned to the release" \
+  has_line "$out/flake.nix" "github:catppuccin/nix/release-26.05"
 echo "OK: no-flavor config"
 
 # ── Handheld: hhd on, TLP off even when asked for ────────────────────
@@ -273,6 +290,10 @@ check upgrade "review notes missing" test -f "$new/UPGRADE-NOTES.md"
 check upgrade "custom module not reported" has_line "$new/UPGRADE-NOTES.md" "local/my-vpn.nix"
 check upgrade "review diff missing" test -f "$new/UPGRADE-REVIEW.diff"
 check upgrade "old config was modified" has_line "$old/hosts/oldbox/configuration.nix" 'stateVersion = "24.11"'
+check upgrade "regenerated host does not import the input" \
+  has_line "$new/hosts/oldbox/oldbox.nix" "inputs.space-elevator.nixosModules.default"
+check upgrade "a Space Elevator module was copied into the regenerated tree" \
+  test ! -e "$new/modules/common"
 echo "OK: upgrade from the old layout"
 
 # The layout that shipped between the two: a settings.nix holding
@@ -418,11 +439,31 @@ check upgrade-prime-guard "the NVIDIA bus ID was lost" has_line "$gse" 'nvidiaBu
 echo "OK: PRIME bus IDs imply the NVIDIA driver"
 
 # ── The current layout carries the tree across ──────────────────────
-# Everything in the old tree reaches the output untouched. Only the
-# directories Space Elevator ships are replaced.
+# Everything in the old tree reaches the output untouched. The copy of
+# the modules a config carried before Space Elevator was a flake input
+# is replaced by the input.
+#
+# A config as the wizard wrote it before then: the module set copied
+# into modules/, imported as ../../modules, and no space-elevator input.
+vendored_config() {
+  local root="$1"
+  cp -R modules "$root/modules"
+  chmod -R u+w "$root/modules"
+  sed -i -E 's|^([[:space:]]*)inputs\.space-elevator\.nixosModules\.default$|\1../../modules|' \
+    "$root/hosts/citest/citest.nix"
+  awk '/^    # The modules\. The stable branch/ { skip = 1 }
+       skip && /^    nixpkgs\.url/ { skip = 0 }
+       !skip { print }' "$root/flake.nix" > "$root/flake.nix.tmp"
+  mv "$root/flake.nix.tmp" "$root/flake.nix"
+  printf '#!/usr/bin/env bash\nnix flake update\n' > "$root/update.sh"
+}
+
 cur=$(mktemp -d)/cur
 SE_GPU=NVIDIA SE_DE="KDE Plasma" SE_TLP=1 SE_OUTDIR="$cur" \
   MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null
+vendored_config "$cur"
+check vendored-fixture "fixture still has the input" lacks_line "$cur/flake.nix" "space-elevator = {"
+check vendored-fixture "fixture does not import its copy" has_line "$cur/hosts/citest/citest.nix" "../../modules"
 curse="$cur/hosts/citest/space-elevator.nix"
 
 # Six switches the wizard never reads back, set the way a user would.
@@ -471,10 +512,22 @@ check upgrade-preserve "a module directory outside the set was dropped" \
 check upgrade-preserve "git history was not carried" test -d "$curup/.git"
 check upgrade-preserve "git history is not the user's" \
   bash -c 'test "$(git -C "$1" rev-parse HEAD 2>/dev/null)" = "$2"' _ "$curup" "$curhead"
-check upgrade-preserve "a Space Elevator module was not replaced" \
-  lacks_line "$curup/modules/gpu/nvidia.nix" "# stale module marker"
-check upgrade-preserve "modules/default.nix was not replaced" \
-  lacks_line "$curup/modules/default.nix" "# stale default marker"
+check upgrade-preserve "the vendored copy of a module was kept" \
+  test ! -e "$curup/modules/gpu"
+check upgrade-preserve "the vendored modules/default.nix was kept" \
+  test ! -e "$curup/modules/default.nix"
+check upgrade-preserve "flake.nix did not gain the space-elevator input" \
+  has_line "$curup/flake.nix" 'url = "github:jspadgett/space-elevator/stable";'
+check upgrade-preserve "the input was added more than once" \
+  test "$(grep -c 'space-elevator = {' "$curup/flake.nix")" -eq 1
+check upgrade-preserve "the input is not inside the inputs block, ahead of nixpkgs" \
+  input_before_nixpkgs "$curup/flake.nix"
+check upgrade-preserve "the host still imports the vendored copy" \
+  lacks_line "$curup/hosts/citest/citest.nix" "../../modules"
+check upgrade-preserve "the host does not import the input" \
+  has_line "$curup/hosts/citest/citest.nix" "inputs.space-elevator.nixosModules.default"
+check upgrade-preserve "the migrated flake.nix does not parse" \
+  bash -c '! command -v nix-instantiate >/dev/null || nix-instantiate --parse "$1" >/dev/null' _ "$curup/flake.nix"
 check upgrade-preserve "README.md was not replaced" \
   lacks_line "$curup/README.md" "# stale readme marker"
 check upgrade-preserve "update.sh was not replaced" \
@@ -500,7 +553,21 @@ check upgrade-preserve-notes "notes do not say the tree carried over unchanged" 
   has_line "$curnotes" "Carried across unchanged"
 check upgrade-preserve-notes "notes do not mention flake.lock" \
   has_line "$curnotes" "flake.lock"
+check upgrade-preserve-notes "notes do not explain the move to the input" \
+  has_line "$curnotes" "Space Elevator is now a flake input"
 echo "OK: the notes describe what carried over"
+
+# Upgrading a config that already takes the input changes nothing about
+# how it gets its modules: no copy appears, and the input isn't doubled.
+inp=$(mktemp -d)/inp
+SE_GPU=AMD SE_DE=GNOME SE_OUTDIR="$inp" MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null
+inpup=$(mktemp -d)/inpup
+SCAFFOLD_BIN="" bash upgrade.sh --config "$inp" --output "$inpup" --yes --no-build >/dev/null
+check upgrade-input "a copy of the modules appeared" test ! -e "$inpup/modules"
+check upgrade-input "flake.nix changed" cmp -s "$inp/flake.nix" "$inpup/flake.nix"
+check upgrade-input "the host file changed" \
+  cmp -s "$inp/hosts/citest/citest.nix" "$inpup/hosts/citest/citest.nix"
+echo "OK: an input-layout config upgrades in place"
 
 # A current-layout host keeps its own stateVersion, so a config the
 # wizard cannot read one from is still upgradable.
@@ -562,12 +629,12 @@ if [ "$(id -u)" -ne 0 ]; then
   # it. Rather than rewrite a tree it was not given, the wizard stops
   # and names the command that hands the whole thing across.
   deep=$(mktemp -d)/nixos
-  mkdir -p "$deep/modules"
-  chmod 555 "$deep/modules"
+  mkdir -p "$deep/hosts"
+  chmod 555 "$deep/hosts"
   deepmsg=$(PATH="$fakebin:$PATH" SE_GPU=Intel SE_DE=GNOME SE_OUTDIR="$deep" \
     MODULE_SOURCE="$PWD/modules" bash scaffold.sh 2>&1 || true)
   check outdir-inside "an unwritable subdirectory was not reported" \
-    bash -c 'grep -qF "$1" <<<"$2"' _ "$deep/modules" "$deepmsg"
+    bash -c 'grep -qF "$1" <<<"$2"' _ "$deep/hosts" "$deepmsg"
   check outdir-inside "the message does not name the command to run" \
     bash -c 'grep -qF "chown -R" <<<"$1"' _ "$deepmsg"
   chmod -R u+w "$deep" 2>/dev/null || true
@@ -619,6 +686,160 @@ check upgrade-bare "invented a GPU driver" bash -c '! grep -qE "^\s+gpu\." "$1"'
 check upgrade-bare "invented a flavor" is_not_enabled "$rb" 'development\.enable'
 check upgrade-bare "invented KDE Connect" is_not_enabled "$rb" 'desktop\.kdeconnect\.enable'
 echo "OK: upgrade invents nothing"
+
+# ── The updater ─────────────────────────────────────────────────────
+# A config wired like a generated one, with every input a local git
+# repository standing in for GitHub: a Space Elevator whose stable
+# branch moves, and nixpkgs and catppuccin with one branch per NixOS
+# release. nixos-rebuild is faked, so this checks what the updater
+# does to the config — the lock, the release lines, the commit, the
+# way back — not a real build.
+
+if command -v nix >/dev/null 2>&1; then
+  upd=$(mktemp -d)
+  export GIT_AUTHOR_NAME=ci GIT_AUTHOR_EMAIL=ci@test GIT_COMMITTER_NAME=ci GIT_COMMITTER_EMAIL=ci@test
+
+  # fake_repo <dir> <branch> — a git repo holding a flake with no outputs
+  fake_repo() {
+    mkdir -p "$1"
+    git -C "$1" init -q -b "$2"
+    printf '{ outputs = _: { }; }\n' > "$1/flake.nix"
+    git -C "$1" add -A
+    git -C "$1" commit -qm init
+  }
+  fake_repo "$upd/nixpkgs" nixos-26.05
+  git -C "$upd/nixpkgs" branch -q nixos-26.11
+  fake_repo "$upd/catppuccin" release-26.05
+  git -C "$upd/catppuccin" branch -q release-26.11
+
+  # se_release <version> <nixosRelease> — a new release on stable
+  se_release() {
+    printf '{ version = "%s"; nixosRelease = "%s"; }\n' "$1" "$2" > "$upd/se/release.nix"
+    git -C "$upd/se" add -A
+    git -C "$upd/se" commit -qm "v$1"
+  }
+  mkdir -p "$upd/se"
+  git -C "$upd/se" init -q -b stable
+  cat > "$upd/se/flake.nix" <<'NIX'
+{
+  inputs.nixpkgs.url = "path:/dev/null";
+  outputs = _: { nixosModules.default = { }; };
+}
+NIX
+  se_release 1.2.0 26.05
+
+  cfg="$upd/cfg"
+  mkdir -p "$cfg/hosts/citest"
+  cat > "$cfg/flake.nix" <<NIX
+{
+  inputs = {
+    space-elevator = {
+      url = "git+file://$upd/se?ref=stable";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    nixpkgs.url = "git+file://$upd/nixpkgs?ref=nixos-26.05";
+    catppuccin.url = "git+file://$upd/catppuccin?ref=release-26.05";
+  };
+  outputs = _: { };
+}
+NIX
+  git -C "$cfg" init -q
+  git -C "$cfg" add -A
+  git -C "$cfg" commit -qm "generated"
+
+  # nixos-rebuild that records what it was asked and fails on request;
+  # sudo that just runs the command.
+  updbin=$(mktemp -d)
+  cat > "$updbin/nixos-rebuild" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "${FAKE_REBUILD_LOG:?}"
+[ "${FAKE_REBUILD_FAIL:-0}" = 1 ] && exit 1
+[ "$1" = build ] && ln -sfn "$(mktemp -d)" result
+exit 0
+EOF
+  printf '#!/usr/bin/env bash\nexec "$@"\n' > "$updbin/sudo"
+  chmod +x "$updbin/nixos-rebuild" "$updbin/sudo"
+  export FAKE_REBUILD_LOG="$upd/rebuild.log"
+  : > "$FAKE_REBUILD_LOG"
+
+  run_update() { PATH="$updbin:$PATH" bash update.sh --config "$cfg" "$@"; }
+  locked_rev() {  # locked_rev <input> — full revision in the config's lock
+    nix --extra-experimental-features "nix-command flakes" eval --impure --raw --expr \
+      "(builtins.fromJSON (builtins.readFile $cfg/flake.lock)).nodes.\"$1\".locked.rev"
+  }
+  quiet() { "$@" >/dev/null 2>&1; }
+
+  # First run: no lock yet. One is made, built against, kept.
+  check update-first "the first update failed" quiet run_update --yes --no-switch
+  check update-first "no lock was written" test -f "$cfg/flake.lock"
+  check update-first "Space Elevator is not locked to stable's head" \
+    test "$(locked_rev space-elevator 2>/dev/null)" = "$(git -C "$upd/se" rev-parse HEAD)"
+  check update-first "nothing was built" grep -q "^build --flake $cfg#citest" "$FAKE_REBUILD_LOG"
+  check update-first "--no-switch switched" bash -c '! grep -q "^switch" "$1"' _ "$FAKE_REBUILD_LOG"
+  git -C "$cfg" add -A
+  git -C "$cfg" commit -qm "locked"
+
+  # --check with nothing new, then with a release out: it reports and
+  # touches nothing.
+  out_check=$(run_update --check 2>&1 || true)
+  check update-check "an up-to-date config was not reported as such" \
+    bash -c 'grep -q "1.2.0 is the newest" <<<"$1"' _ "$out_check"
+  se_release 1.2.1 26.05
+  cp "$cfg/flake.lock" "$upd/lock.before-check"
+  out_check=$(run_update --check 2>&1 || true)
+  check update-check "a new release was not reported" \
+    bash -c 'grep -q "1.2.1 is out" <<<"$1"' _ "$out_check"
+  check update-check "--check changed the lock" cmp -s "$upd/lock.before-check" "$cfg/flake.lock"
+
+  # A failed build puts flake.nix and flake.lock back exactly.
+  cp "$cfg/flake.nix" "$upd/flake.before-fail"
+  cp "$cfg/flake.lock" "$upd/lock.before-fail"
+  check update-fail "a failed build was reported as success" \
+    bash -c '! FAKE_REBUILD_FAIL=1 "$@" >/dev/null 2>&1' _ run_update --yes
+  check update-fail "flake.lock was not restored after a failed build" \
+    cmp -s "$upd/lock.before-fail" "$cfg/flake.lock"
+  check update-fail "flake.nix was not restored after a failed build" \
+    cmp -s "$upd/flake.before-fail" "$cfg/flake.nix"
+
+  # A release that moves to the next NixOS. Asked without --yes, the
+  # answer is no (there is no terminal), and nothing may change.
+  se_release 1.3.0 26.11
+  check update-decline "declining the release move failed the run" quiet run_update
+  check update-decline "the lock changed although the move was declined" \
+    cmp -s "$upd/lock.before-fail" "$cfg/flake.lock"
+  check update-decline "flake.nix changed although the move was declined" \
+    has_line "$cfg/flake.nix" "ref=nixos-26.05"
+
+  # Accepted: Space Elevator, nixpkgs and catppuccin all move, the
+  # system is switched, and the update is one commit.
+  : > "$FAKE_REBUILD_LOG"
+  check update-release "the release update failed" quiet run_update --yes
+  check update-release "nixpkgs was not moved to the new release" \
+    has_line "$cfg/flake.nix" "ref=nixos-26.11"
+  check update-release "catppuccin was not moved to the new release" \
+    has_line "$cfg/flake.nix" "ref=release-26.11"
+  check update-release "the old release is still named" lacks_line "$cfg/flake.nix" "26.05"
+  check update-release "Space Elevator is not locked to the new release" \
+    test "$(locked_rev space-elevator 2>/dev/null)" = "$(git -C "$upd/se" rev-parse HEAD)"
+  check update-release "nixpkgs is not locked to the new release branch" \
+    test "$(locked_rev nixpkgs 2>/dev/null)" = "$(git -C "$upd/nixpkgs" rev-parse nixos-26.11)"
+  check update-release "the system was not switched" grep -q "^switch --flake $cfg#citest" "$FAKE_REBUILD_LOG"
+  check update-release "the update was not committed" \
+    bash -c 'git -C "$1" log -1 --format=%s | grep -q "1.2.0 → 1.3.0, NixOS 26.05 → 26.11"' _ "$cfg"
+  check update-release "the commit left changes behind" \
+    bash -c 'git -C "$1" diff --quiet HEAD -- flake.nix flake.lock' _ "$cfg"
+
+  # A config that still carries its own copy is pointed at the upgrade.
+  vend=$(mktemp -d)/vend
+  SE_GPU=AMD SE_DE=GNOME SE_OUTDIR="$vend" MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null
+  vendored_config "$vend"
+  vendmsg=$(PATH="$updbin:$PATH" bash update.sh --config "$vend" --yes 2>&1 || true)
+  check update-vendored "a vendored config was not sent to the upgrade" \
+    bash -c 'grep -q "space-elevator/stable#upgrade" <<<"$1"' _ "$vendmsg"
+  echo "OK: the updater"
+else
+  echo "SKIP: nix not available, skipping the updater"
+fi
 
 # ── The generated file is valid Nix ─────────────────────────────────
 # (Evaluating the whole config needs nixpkgs; parsing does not.)
