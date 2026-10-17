@@ -10,6 +10,6 @@
 #                 moves them when it changes. `nix flake check` fails
 #                 if flake.lock's nixpkgs is a different release.
 {
-  version = "1.2.0";
+  version = "0.4.0";
   nixosRelease = "26.05";
 }
