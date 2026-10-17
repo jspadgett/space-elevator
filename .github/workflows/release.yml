@@ -1,17 +1,20 @@
 name: Release
 
-# Generated configs follow the `stable` branch, so moving it is what
-# ships a release to every machine's next ./update.sh. It only ever
-# moves to a tag, and only after the whole CI suite has passed on that
-# tag's commit.
+# A tag push does two things: builds the installer ISO and attaches it
+# to the GitHub release, and moves the `stable` branch to the tag.
+# Generated configs follow `stable`, so moving it is what ships a
+# release to every machine's next ./update.sh. It only ever moves to a
+# tag, and only after the whole CI suite has passed on that tag.
 #
 #   1. bump `version` in release.nix (and `nixosRelease`, when the lock
 #      moves to a new NixOS release) on main
 #   2. git tag v<version> && git push origin v<version>
 #
-# Pulling a bad release: run this workflow by hand with the previous
-# tag and "rollback" ticked. Machines that already updated go back on
-# their next ./update.sh.
+# Manual runs with no tag are ISO test builds, as before: the ISO is
+# uploaded as a workflow artifact and stable is left alone. Pulling a
+# bad release: run it by hand with the previous tag and "rollback"
+# ticked. Machines that already updated go back on their next
+# ./update.sh.
 
 on:
   push:
@@ -19,31 +22,78 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to put stable on (e.g. v1.2.0)"
-        required: true
+        description: "Move stable to this tag (e.g. v1.2.0). Leave empty for an ISO test build."
+        required: false
+        default: ""
       rollback:
         description: "Allow moving stable backwards"
         type: boolean
         default: false
 
 permissions:
-  contents: write
-
-concurrency:
-  group: release-stable
-  cancel-in-progress: false
+  contents: write # attach files to the release; move the stable branch
 
 jobs:
+  iso:
+    name: Build and publish the installer ISO
+    # A manual run naming a tag only moves stable.
+    if: github.event_name == 'push' || github.event.inputs.tag == ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The ISO build needs more disk than a stock runner has free;
+      # drop the preinstalled toolchains we don't use (~25 GB back).
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
+            /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build the ISO
+        run: |
+          nix build .#nixosConfigurations.space-elevator-iso.config.system.build.isoImage
+          mkdir -p dist
+          cp result/iso/*.iso dist/
+          cd dist && sha256sum *.iso > SHA256SUMS
+          ls -lh
+
+      # Manual runs: keep the ISO as a downloadable workflow artifact
+      - name: Upload build artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: space-elevator-iso
+          path: dist/*
+          retention-days: 7
+
+      # Tag pushes: attach the ISO to the GitHub release for that tag
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.iso
+            dist/SHA256SUMS
+          generate_release_notes: true
+
   # On a tag push this is the tag's commit. A manual run tests the
   # default branch instead; the tag it names passed this when it was
   # released.
   ci:
+    if: github.event_name == 'push' || github.event.inputs.tag != ''
     uses: ./.github/workflows/ci.yml
 
   promote:
     name: Move stable to the tag
     needs: ci
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-stable
+      cancel-in-progress: false
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
       ROLLBACK: ${{ github.event.inputs.rollback || 'false' }}
