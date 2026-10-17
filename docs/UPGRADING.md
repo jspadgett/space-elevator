@@ -3,11 +3,17 @@
 Moves a machine that's already running a Space Elevator config onto the
 current modules, keeping your disks, your user and your additions.
 
-**First, the honest answer: you may not need to do this.** Your config
-is self-contained plain NixOS. It doesn't phone home, nothing expires,
-and `./update.sh` keeps nixpkgs current without any of this. Upgrade
-because you want the new gaming stack and the option-based switches —
-not because you have to.
+**Do you need this?** Open your config's `flake.nix`. If it has a
+`space-elevator` input, no: `./update.sh` already brings you every new
+release, modules and all, and this page isn't for you.
+
+If it doesn't, your config carries its own copy of the modules in
+`modules/`, and nothing updates that copy — `./update.sh` there moves
+nixpkgs and nothing else (newer versions of it say so and stop). Doing
+this once switches the config to the layout where Space Elevator is an
+input, so from then on one `./update.sh` covers everything. Your config
+keeps working either way; it just stops getting Space Elevator's
+fixes.
 
 Two things to know before starting:
 
@@ -22,7 +28,7 @@ Two things to know before starting:
 On the machine you're upgrading:
 
 ```sh
-nix run github:jspadgett/space-elevator#upgrade
+nix run github:jspadgett/space-elevator/stable#upgrade
 ```
 
 It reads your existing config, shows you what it found, regenerates it
@@ -32,6 +38,16 @@ declared password, and which features you had on. Then it builds
 *without touching the running system*, shows you what would change, and
 switches only if you say yes. Your old config is moved aside, not
 deleted.
+
+On a config that already uses the option switches, nothing about your
+choices is regenerated: the tree carries across as it is, and the
+upgrade makes two small edits — `flake.nix` gains the `space-elevator`
+input, and `hosts/<host>/<host>.nix` imports
+`inputs.space-elevator.nixosModules.default` instead of `../../modules`
+— then removes the copied modules. Anything of your own in `modules/`
+stays. If you had edited one of Space Elevator's own modules, that edit
+goes with the copy; the review diff shows it, so you can move it into a
+module of your own.
 
 Useful flags:
 
@@ -281,6 +297,14 @@ Also worth a look: sound, Bluetooth, your printer, and a controller if
 you use one.
 
 ---
+
+## From now on
+
+`./update.sh` in your config is the whole update story: it moves Space
+Elevator to its newest release, nixpkgs (asking first when that means a
+new NixOS release), and every other input, then builds, shows the
+difference and switches when you say so. You won't need this page
+again.
 
 ## If something's wrong
 

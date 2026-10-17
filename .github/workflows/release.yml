@@ -1,16 +1,43 @@
 name: Release
 
+# A tag push does two things: builds the installer ISO and attaches it
+# to the GitHub release, and moves the `stable` branch to the tag.
+# Generated configs follow `stable`, so moving it is what ships a
+# release to every machine's next ./update.sh. It only ever moves to a
+# tag, and only after the whole CI suite has passed on that tag.
+#
+#   1. bump `version` in release.nix (and `nixosRelease`, when the lock
+#      moves to a new NixOS release) on main
+#   2. git tag v<version> && git push origin v<version>
+#
+# Manual runs with no tag are ISO test builds, as before: the ISO is
+# uploaded as a workflow artifact and stable is left alone. Pulling a
+# bad release: run it by hand with the previous tag and "rollback"
+# ticked. Machines that already updated go back on their next
+# ./update.sh.
+
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch: # manual test builds — uploads the ISO as an artifact
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Move stable to this tag (e.g. v1.2.0). Leave empty for an ISO test build."
+        required: false
+        default: ""
+      rollback:
+        description: "Allow moving stable backwards"
+        type: boolean
+        default: false
 
 permissions:
-  contents: write # needed to attach files to the release
+  contents: write # attach files to the release; move the stable branch
 
 jobs:
   iso:
     name: Build and publish the installer ISO
+    # A manual run naming a tag only moves stable.
+    if: github.event_name == 'push' || github.event.inputs.tag == ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,3 +79,59 @@ jobs:
             dist/*.iso
             dist/SHA256SUMS
           generate_release_notes: true
+
+  # On a tag push this is the tag's commit. A manual run tests the
+  # default branch instead; the tag it names passed this when it was
+  # released.
+  ci:
+    if: github.event_name == 'push' || github.event.inputs.tag != ''
+    uses: ./.github/workflows/ci.yml
+
+  promote:
+    name: Move stable to the tag
+    needs: ci
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-stable
+      cancel-in-progress: false
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      ROLLBACK: ${{ github.event.inputs.rollback || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: The tag matches release.nix
+        run: |
+          version=$(nix eval --raw --file release.nix version)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::$TAG is tagged, but release.nix says version = \"$version\"."
+            exit 1
+          fi
+
+      - name: The tag is on main
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$TAG^{commit}" origin/main \
+            || { echo "::error::$TAG is not on main."; exit 1; }
+
+      - name: Move stable
+        run: |
+          target=$(git rev-parse "$TAG^{commit}")
+          if git ls-remote --exit-code --heads origin stable >/dev/null; then
+            git fetch origin stable
+            if ! git merge-base --is-ancestor origin/stable "$target"; then
+              if [ "$ROLLBACK" != "true" ]; then
+                echo "::error::stable is not an ancestor of $TAG. Re-run by hand with rollback ticked to move it back."
+                exit 1
+              fi
+              git push --force origin "$target:refs/heads/stable"
+              echo "stable moved back to $TAG ($target)"
+              exit 0
+            fi
+          fi
+          git push origin "$target:refs/heads/stable"
+          echo "stable is now $TAG ($target)"
