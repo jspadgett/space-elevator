@@ -1,35 +1,43 @@
-# 🚀 Space Elevator
+# Space Elevator
+
+
 
 ![CI](https://github.com/jspadgett/space-elevator/actions/workflows/ci.yml/badge.svg)
 
-**Space Elevator gets you to orbit. What you do up there is your business.**
 
-Answer four questions, get a complete NixOS desktop with everything
-working — app store, updates, rollback. If that's all you ever want,
-you never touch a config file. But the thing you're running is plain
-NixOS: every feature is one line, all of nixpkgs is one search away,
-and your daily driver is your gateway to Nix space.
 
-​```sh
-nix run github:jspadgett/space-elevator
-​```
+**Space Elevator gets you to gaming orbit.** A NixOS-based installer for
+gaming desktops and handhelds.
 
-**New to NixOS?** The [complete beginner's guide](./docs/INSTALL.md)
-takes you from blank USB stick to working desktop.
+Flash the ISO, answer a few questions, and you get a NixOS system set up
+for games: Steam with Proton-GE, Heroic and Lutris for everything else,
+the right GPU driver, and controller support. On handhelds like the ROG
+Ally, Legion Go and Steam Deck, it also sets up Handheld Daemon and a
+Big Picture session. Updates are one command, and if one goes wrong,
+the previous system is still in the boot menu.
 
-**Keeping it current:** `./update.sh` in your config moves everything at
-once — Space Elevator's modules to the newest release, nixpkgs (onto
-the next NixOS release when Space Elevator moves to one), and every
-other input. It builds before it switches, and the previous system
-stays in the boot menu.
+Underneath, it's plain NixOS. Every feature is one line in a config you
+own, and all of nixpkgs is there when you want more.
 
-**Installed before updates covered the modules?** Run
-`nix run github:jspadgett/space-elevator/stable#upgrade` once. It
-switches your config to the updatable layout, carrying your hardware
-config, `stateVersion`, password and feature choices across. It builds
-before it switches, and nothing is deleted. See
-[Upgrading an existing system](./docs/UPGRADING.md), which also covers
-doing it by hand.
+## Install
+
+1. Download the ISO from the [latest release](https://github.com/jspadgett/space-elevator/releases/latest).
+2. Flash it to a USB stick with [balenaEtcher](https://etcher.balena.io/) or `dd`.
+3. Boot from it. The installer starts on its own and handles Wi-Fi, the
+   disk and the install. You can drive it with a keyboard or a gamepad.
+
+New to NixOS? The [step-by-step guide](./docs/INSTALL.md) covers boot
+menus, Secure Boot and the rest.
+
+**Already running NixOS?** `nix run github:jspadgett/space-elevator`
+generates a config for the machine you're on, without reinstalling.
+
+## Keeping it current
+
+`./update.sh` in your config updates everything in one go: Space
+Elevator itself, every package, and NixOS when a new release comes out
+(it asks before that one). It builds first, shows what will change,
+and only switches when you say yes.
 
 ## What you get without asking
 
