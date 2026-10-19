@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The release workflow runs all of this against the tag before it
+  # moves the stable branch.
+  workflow_call:
 
 jobs:
   generate:
@@ -21,7 +24,7 @@ jobs:
       - name: Lint scripts
         run: |
           nix run nixpkgs#shellcheck -- -S info -e SC2016,SC2317,SC2329 \
-            scaffold.sh upgrade.sh tests/run.sh
+            scaffold.sh upgrade.sh update.sh tests/run.sh
       - name: Generate configs for every desktop, GPU and flavor
         run: bash tests/run.sh
 
@@ -77,6 +80,10 @@ jobs:
           ! grep -qE '^\s+desktop\.plasma\.enable = true;' "$switches"
           ! grep -qE '^\s+gpu\.nvidia' "$switches"
           test -f upgraded/UPGRADE-NOTES.md
+      - name: The packaged updater starts
+        run: |
+          nix run .#update -- --help 2>&1 | tee update.log
+          ! grep -qiE "command not found|unbound variable" update.log
 
   eval:
     name: Evaluate generated config (${{ matrix.de }})
@@ -101,10 +108,13 @@ jobs:
           SE_FLAVORS: development,kdeconnect
           SE_OUTDIR: ${{ github.workspace }}/out
         run: MODULE_SOURCE="$PWD/modules" bash scaffold.sh
+      # Generated configs take Space Elevator from the stable branch;
+      # point that input at this checkout so the modules under test
+      # are the ones evaluated.
       - name: Evaluate the VM build (exercises every enabled module)
         working-directory: out
         run: |
-          nix eval \
+          nix eval --override-input space-elevator "path:$GITHUB_WORKSPACE" \
             .#nixosConfigurations.citest.config.system.build.vm.drvPath
 
   eval-gpu:
@@ -135,7 +145,7 @@ jobs:
       - name: Evaluate the VM build
         working-directory: out
         run: |
-          nix eval \
+          nix eval --override-input space-elevator "path:$GITHUB_WORKSPACE" \
             .#nixosConfigurations.citest.config.system.build.vm.drvPath
 
   iso-eval:

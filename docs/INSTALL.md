@@ -154,9 +154,15 @@ config editing needed.
 **Updating everything:**
 
 ```
-cd /etc/nixos
-sudo bash update.sh
+/etc/nixos/update.sh
 ```
+
+One command updates Space Elevator itself, every package on the
+system, and — when Space Elevator moves to a new NixOS release — NixOS
+too (it asks before that one). It builds the new system first, shows
+you what changes, and only switches when you say yes. It asks for your
+password when it needs it. `/etc/nixos/update.sh --check` just tells
+you whether a new Space Elevator release is out.
 
 **If an update breaks something:** reboot and pick the *previous* entry
 in the boot menu. The whole system rolls back to exactly how it was.
@@ -179,8 +185,8 @@ Search package names at [search.nixos.org](https://search.nixos.org/packages).
 `hosts/YOURHOSTNAME/space-elevator.nix`. Every feature is one line —
 `gaming.enable = true;`, `desktop.bluetooth.enable = false;` — and the
 commented-out lines in that file show you what else is available.
-Change a line, rebuild, done. Nothing needs downloading: every module
-is already in your `modules/` directory, just switched off.
+Change a line, rebuild, done. Nothing extra needs downloading: every
+module is already on your machine, just switched off.
 
 ## Already running Linux? Try it in a VM first
 
@@ -199,12 +205,15 @@ The same config installs for real.
 
 ## Already running a Space Elevator system?
 
-Nothing expires — your config is self-contained, and `./update.sh`
-keeps it current. To move an existing machine onto newer Space
-Elevator modules:
+`./update.sh` in your config keeps everything current, Space Elevator's
+modules included.
+
+If you installed before updates covered the modules, your config
+carries its own copy of them in a `modules/` directory, and
+`./update.sh` will tell you so. Switch it over once with:
 
 ```
-nix run github:jspadgett/space-elevator#upgrade
+nix run github:jspadgett/space-elevator/stable#upgrade
 ```
 
 It carries your hardware config, password and settings across, builds

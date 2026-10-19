@@ -17,8 +17,15 @@ nix run github:jspadgett/space-elevator
 **New to NixOS?** The [complete beginner's guide](./docs/INSTALL.md)
 takes you from blank USB stick to working desktop.
 
-**Already running one?** `nix run github:jspadgett/space-elevator#upgrade`
-moves a machine onto the current modules, carrying your hardware
+**Keeping it current:** `./update.sh` in your config moves everything at
+once — Space Elevator's modules to the newest release, nixpkgs (onto
+the next NixOS release when Space Elevator moves to one), and every
+other input. It builds before it switches, and the previous system
+stays in the boot menu.
+
+**Installed before updates covered the modules?** Run
+`nix run github:jspadgett/space-elevator/stable#upgrade` once. It
+switches your config to the updatable layout, carrying your hardware
 config, `stateVersion`, password and feature choices across. It builds
 before it switches, and nothing is deleted. See
 [Upgrading an existing system](./docs/UPGRADING.md), which also covers
@@ -42,7 +49,7 @@ Like any good desktop distro, the baseline just works. Every generated config in
 
 **System sanity** — NetworkManager, a drop-by-default firewall, zram swap, earlyoom, automatic Nix garbage collection, and quality-of-life Nix tooling (nh, nvd, nix-tree).
 
-**A GUI app store** — Discover, GNOME Software, or COSMIC Store wired to Flathub, so installing apps never requires editing a config file. Plus a generated `update.sh` for one-command system updates, with NixOS generation rollback as the safety net.
+**A GUI app store** — Discover, GNOME Software, or COSMIC Store wired to Flathub, so installing apps never requires editing a config file. Plus a generated `update.sh` that updates the modules, nixpkgs and everything else in one command, with NixOS generation rollback as the safety net.
 
 ## The questions
 
@@ -61,6 +68,7 @@ Set `SE_NONINTERACTIVE=1` plus any `SE_*` variables (see the header of `scaffold
 | What | How |
 |---|---|
 | The wizard writes the right switches | `bash tests/run.sh` — generates a config for every desktop, GPU and flavor combination and checks the output |
+| Updates and upgrades do what they say | `bash tests/run.sh` — runs the upgrade on every layout that has shipped, and the updater against local stand-ins for GitHub: new releases, a NixOS release change, a failed build, a declined move |
 | The modules actually work | `nix flake check` — [tests/checks.nix](./tests/checks.nix) evaluates every feature combination, proves importing the set turns nothing on, and verifies each assertion fires on the config it was written for |
 | The generated config builds | CI evaluates the VM derivation for each desktop and GPU |
 | The installer ISO builds | CI evaluates the ISO derivation |
@@ -69,7 +77,7 @@ Set `SE_NONINTERACTIVE=1` plus any `SE_*` variables (see the header of `scaffold
 
 **Defaults over decisions.** Anything with an obviously correct answer for a gaming desktop is baked in — Steam, a browser, a theme. You choose identity (hostname, user, desktop); the tool handles the rest. Every baked-in default is still one line to remove.
 
-**Self-contained.** Every module is vendored in this repository under `modules/`, and the complete set is copied into your generated config. Nothing is fetched at run time, so output is reproducible and auditable — and turning on a feature later never requires going back to Space Elevator.
+**One update path.** A generated config takes Space Elevator as a flake input that follows the `stable` branch, which only ever points at a release. Your flake.lock pins the exact modules in use, so builds stay reproducible and auditable, and turning on a feature never fetches anything new. `./update.sh` moves the modules, nixpkgs and every other input forward together, so there is no second, manual step for getting new modules.
 
 **Everything is an option.** Modules declare `spaceElevator.*` options and stay dormant until enabled. Your answers become a single file — `hosts/<name>/space-elevator.nix` — where every feature is one line you can flip:
 
@@ -119,7 +127,7 @@ The module set is a flake output, so you can skip generation entirely:
 
 ```nix
 {
-  inputs.space-elevator.url = "github:jspadgett/space-elevator";
+  inputs.space-elevator.url = "github:jspadgett/space-elevator/stable";
 
   # in your nixosSystem modules:
   imports = [ inputs.space-elevator.nixosModules.default ];
@@ -142,6 +150,21 @@ Adding a module takes two steps:
 The option path mirrors the directory layout. A feature that should follow its category's rollup takes `default = config.spaceElevator.<category>.enable;`. Modules that need the primary user's name read `config.spaceElevator.user.name`.
 
 New modules should come with a test in `tests/checks.nix` — an `evalCheck` at minimum, and an `expect` if the feature has behavior worth pinning down.
+
+## Releasing
+
+`stable` is what every installed machine's `./update.sh` follows, so it
+only moves through [the release workflow](./.github/workflows/release.yml):
+
+1. On main, bump `version` in [release.nix](./release.nix). When the lock
+   moves to a new NixOS release, bump `nixosRelease` with it —
+   `nix flake check` fails if the two disagree.
+2. `git tag v<version> && git push origin v<version>`.
+
+The workflow runs the full CI suite on the tag, checks the tag against
+`release.nix` and that it is on main, then fast-forwards `stable`. To
+pull a bad release, run the workflow by hand with the previous tag and
+"rollback" ticked.
 
 ## Requirements
 
