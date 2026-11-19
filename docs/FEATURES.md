@@ -25,7 +25,8 @@ installer recognises the machine and adds:
 
 ## Hardware
 
-- The GPU driver for your card (AMD, Intel or NVIDIA), detected
+- The GPU driver for your card (AMD, Intel or NVIDIA), detected —
+  including the legacy NVIDIA branch for cards older than Turing
 - PRIME offload on hybrid laptops, with the bus IDs filled in
 - TLP power management on laptops
 - Firmware updates (fwupd) and periodic SSD TRIM

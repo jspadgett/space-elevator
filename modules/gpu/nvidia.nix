@@ -44,7 +44,10 @@ in
       description = ''
         Which driver branch to use. In nixos-26.05 `stable` is the 595
         series, which dropped Maxwell, Pascal and Volta — on a GTX 10xx
-        or 9xx card use "legacy_580" instead (and leave `open` off).
+        or 9xx card use "legacy_580" instead, and on a Kepler card
+        (GTX 6xx/7xx) "legacy_470". The wizard picks the branch from
+        the card's PCI device ID. A legacy branch turns `open` and
+        runtime D3 off by default.
       '';
     };
 
@@ -94,11 +97,14 @@ in
 
       finegrained = lib.mkOption {
         type = lib.types.bool;
-        default = cfg.prime.enable;
-        defaultText = lib.literalExpression "config.spaceElevator.gpu.nvidia.prime.enable";
+        default = cfg.prime.enable && !isLegacy;
+        defaultText = lib.literalExpression ''config.spaceElevator.gpu.nvidia.prime.enable && !(lib.hasPrefix "legacy_" config.spaceElevator.gpu.nvidia.driver)'';
         description = ''
           Runtime D3: power the dGPU down entirely while nothing is
-          using it. Turing and newer only, and requires PRIME offload.
+          using it. Turing and newer only, and requires PRIME offload,
+          so it defaults to off on the legacy branches, which exist
+          for the older cards. A Turing card on a legacy branch can
+          turn it back on.
         '';
       };
     };
