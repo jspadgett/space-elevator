@@ -13,6 +13,8 @@
 #   SE_PRIME=1 to set up PRIME offload from this machine's detected
 #     bus IDs (non-interactive defaults to off, since the machine
 #     running the wizard may not be the target)
+#   SE_NVIDIA_DRIVER=stable|legacy_580|legacy_470 to override the
+#     driver branch picked from the NVIDIA card's PCI device ID
 #
 # The generated config takes Space Elevator as a flake input, imports
 # its whole module set, and switches features on through options in
@@ -331,24 +333,60 @@ pci_to_nix() {
 
 # Display controllers: VGA (0300), 3D (0302), display (0380). `lspci
 # -mm` quotes its fields, so splitting on the quote gives slot in the
-# first field and vendor in the fourth.
+# first field, vendor in the fourth and device name in the sixth.
 NVIDIA_BUSID=""
+NVIDIA_SLOT=""
+NVIDIA_NAME=""
 INTEL_BUSID=""
 AMD_BUSID=""
 if command -v lspci >/dev/null 2>&1; then
-  while read -r slot vendor; do
+  while IFS=$'\t' read -r slot vendor name; do
     [ -n "$slot" ] || continue
     case "$vendor" in
       NVIDIA*)
-        [ -n "$NVIDIA_BUSID" ] || NVIDIA_BUSID=$(pci_to_nix "$slot") ;;
+        if [ -z "$NVIDIA_BUSID" ]; then
+          NVIDIA_BUSID=$(pci_to_nix "$slot")
+          NVIDIA_SLOT="$slot"
+          NVIDIA_NAME="$name"
+        fi ;;
       Intel*)
         [ -n "$INTEL_BUSID" ] || INTEL_BUSID=$(pci_to_nix "$slot") ;;
       "Advanced Micro"* | AMD* | ATI*)
         [ -n "$AMD_BUSID" ] || AMD_BUSID=$(pci_to_nix "$slot") ;;
     esac
   done < <( { lspci -mm -d ::0300; lspci -mm -d ::0302; lspci -mm -d ::0380; } 2>/dev/null \
-            | awk -F'"' '{ print $1 " " $4 }' )
+            | awk -F'"' '{ sub(/[[:space:]]+$/, "", $1); print $1 "\t" $4 "\t" $6 }' )
 fi
+
+# The NVIDIA card's PCI device ID: `lspci -n` prints
+# "01:00.0 0300: 10de:1ba1 (rev a1)".
+NVIDIA_DEVICE_ID=""
+if [ -n "$NVIDIA_SLOT" ]; then
+  NVIDIA_DEVICE_ID=$(lspci -n -s "$NVIDIA_SLOT" 2>/dev/null \
+    | awk '{ split($3, id, ":"); print tolower(id[2]); exit }')
+fi
+
+# nvidia_driver_for <device id, hex> — the driver branch for that
+# card. NVIDIA allocates device IDs by generation: Turing and newer
+# start at 0x1e00, Maxwell, Pascal and Volta fill 0x1340–0x1dff, and
+# Kepler sits in three blocks below that, among Fermi parts no
+# packaged driver supports any more.
+#   stable      Turing and newer (GTX 16xx, RTX 20xx and up)
+#   legacy_580  Maxwell, Pascal, Volta (GTX 9xx, GTX 10xx, Titan V)
+#   legacy_470  Kepler (GTX 6xx, most GTX 7xx)
+#   unsupported Fermi and older
+# Prints nothing for an ID it can't read.
+nvidia_driver_for() {
+  [[ "$1" =~ ^[0-9a-fA-F]{4}$ ]] || return 0
+  local id=$((16#$1))
+  if   (( id >= 0x1e00 )); then echo stable
+  elif (( id >= 0x1340 )); then echo legacy_580
+  elif (( (id >= 0x0fc0 && id < 0x1040) \
+       || (id >= 0x1180 && id < 0x1200) \
+       || (id >= 0x1280 && id < 0x12c0) )); then echo legacy_470
+  else echo unsupported
+  fi
+}
 
 # Check discrete vendors before Intel so hybrid laptops surface the dGPU
 GPU_DETECTED=""
@@ -367,6 +405,40 @@ else
   if [ -z "$GPU" ]; then
     GPU=$(pick_one "GPU vendor:" "AMD" "Intel" "NVIDIA" "None / VM")
   fi
+fi
+
+# The NVIDIA driver branch. The default branch supports Turing and
+# newer only; an older card on it gets no working driver, and with the
+# panel wired to the dGPU, no picture. Non-interactively the detected
+# branch is used even though the machine running the wizard may not
+# be the target: legacy_580 also drives every newer card, so a wrong
+# guess costs the open modules and runtime power-down, not the display.
+NVIDIA_DRIVER=stable
+NVIDIA_DRIVER_DETECTED=""
+if [ "$GPU" = NVIDIA ]; then
+  NVIDIA_DRIVER_DETECTED=$(nvidia_driver_for "$NVIDIA_DEVICE_ID")
+  if [ "$NONINT" = 1 ]; then
+    NVIDIA_DRIVER="${SE_NVIDIA_DRIVER:-${NVIDIA_DRIVER_DETECTED:-stable}}"
+  else
+    case "$NVIDIA_DRIVER_DETECTED" in
+      legacy_*)
+        gum confirm "${NVIDIA_NAME:-This NVIDIA card} predates Turing, and the current NVIDIA driver no longer supports it. Use the ${NVIDIA_DRIVER_DETECTED#legacy_} legacy driver instead? (recommended)" \
+          && NVIDIA_DRIVER="$NVIDIA_DRIVER_DETECTED" ;;
+      unsupported)
+        NVIDIA_DRIVER=unsupported ;;
+    esac
+  fi
+  case "$NVIDIA_DRIVER" in
+    stable | legacy_580 | legacy_470) ;;
+    unsupported)
+      # The proprietary module blacklists nouveau, so enabling it here
+      # would leave the card with no driver at all. Leave it to the
+      # kernel's own drivers, and to the iGPU when there is one.
+      note "${NVIDIA_NAME:-This NVIDIA card} is older than any NVIDIA driver Space Elevator packages. Leaving it to the open-source nouveau driver."
+      NVIDIA_DRIVER=stable
+      if [ -n "$INTEL_BUSID" ]; then GPU=Intel; else GPU="None / VM"; fi ;;
+    *) die "Unknown NVIDIA driver branch: $NVIDIA_DRIVER (stable, legacy_580 or legacy_470)" ;;
+  esac
 fi
 
 # Handheld gaming PCs identify themselves in DMI. These are the
@@ -445,7 +517,7 @@ if [ "$GPU" = "NVIDIA" ] && [ -n "$IGPU_BUSID" ] && [ -n "$NVIDIA_BUSID" ]; then
     # wizard, which non-interactively is not necessarily the target.
     [ "${SE_PRIME:-0}" = 1 ] && USE_PRIME=true
   elif [ "$CAPTURE_HW" = true ] && [ "$IS_LAPTOP" = true ]; then
-    gum confirm "Hybrid graphics detected (integrated $IGPU_BUSID + NVIDIA $NVIDIA_BUSID) — set up PRIME offload? (recommended on laptops: the dGPU powers down when idle)" \
+    gum confirm "Hybrid graphics detected (integrated $IGPU_BUSID + NVIDIA $NVIDIA_BUSID) — set up PRIME offload? (recommended on laptops$( [ "$NVIDIA_DRIVER" = stable ] && echo ": the dGPU powers down when idle"))" \
       && USE_PRIME=true
   fi
 fi
@@ -688,7 +760,21 @@ de_lines() {
   done
 }
 
+# nvidia_driver_lines <indent> <attribute> — the legacy driver branch
+# chosen for this card, with a comment saying why.
+nvidia_driver_lines() {
+  local i="$1" attr="$2"
+  [ -n "$NVIDIA_NAME" ] && printf '%s# Detected: %s.\n' "$i" "$NVIDIA_NAME"
+  printf '%s# This card predates Turing, which the current driver branch\n' "$i"
+  printf '%s# requires, so it gets the legacy branch, without the open\n' "$i"
+  printf '%s# kernel modules or runtime power-down.\n' "$i"
+  printf '%s%s = "%s";\n' "$i" "$attr" "$NVIDIA_DRIVER"
+}
+
 gpu_lines() {
+  local PRIME_POWERS_DOWN=", then
+      # powers down"
+  [ "$NVIDIA_DRIVER" = stable ] || PRIME_POWERS_DOWN=""
   case "$GPU" in
     AMD)
       printf '    gpu.amd.enable = true;\n'
@@ -703,24 +789,32 @@ gpu_lines() {
       enable = true;
 
       # Hybrid graphics, detected on this machine: the integrated GPU
-      # drives the panel and the NVIDIA card renders on demand, then
-      # powers down. Run a program on the dGPU with:
+      # drives the panel and the NVIDIA card renders on demand${PRIME_POWERS_DOWN}.
+      # Run a program on the dGPU with:
       #   nvidia-offload <command>
       prime = {
         enable = true;
         $IGPU_ATTR = "$IGPU_BUSID";
         nvidiaBusId = "$NVIDIA_BUSID";
       };
+EOF
+        if [ "$NVIDIA_DRIVER" = stable ]; then
+          cat <<'EOF'
 
       # Pre-Turing card (GTX 10xx / 9xx)? The current driver dropped
-      # support for those: set driver = "legacy_580"; and remove the
-      # prime block's power savings by adding
-      # powerManagement.finegrained = false;
-    };
+      # support for those: set driver = "legacy_580";
 EOF
+        else
+          printf '\n'
+          nvidia_driver_lines '      ' driver
+        fi
+        printf '    };\n'
       else
+        printf '    gpu.nvidia.enable = true;\n'
+        if [ "$NVIDIA_DRIVER" != stable ]; then
+          nvidia_driver_lines '    ' gpu.nvidia.driver
+        fi
         cat <<'EOF'
-    gpu.nvidia.enable = true;
     # Hybrid laptop (integrated GPU + NVIDIA)? Uncomment and fill in
     # the bus IDs from `lspci | grep -E 'VGA|3D'`, converted to
     # decimal — 01:00.0 becomes "PCI:1:0:0":
@@ -729,9 +823,13 @@ EOF
     #     intelBusId  = "PCI:0:2:0";   # or amdgpuBusId on an AMD iGPU
     #     nvidiaBusId = "PCI:1:0:0";
     #   };
+EOF
+        if [ "$NVIDIA_DRIVER" = stable ]; then
+          cat <<'EOF'
     # Pre-Turing card (GTX 10xx / 9xx)?
     #   gpu.nvidia.driver = "legacy_580";
 EOF
+        fi
       fi
       ;;
     *)

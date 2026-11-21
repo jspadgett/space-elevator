@@ -435,6 +435,31 @@ in
         && c.hardware.nvidia.prime.amdgpuBusId == "PCI:5:0:0"
       );
 
+  gpu-nvidia-legacy-prime =
+    expect "gpu-nvidia-legacy-prime"
+      {
+        spaceElevator = {
+          enable = true;
+          gpu.nvidia = {
+            enable = true;
+            driver = "legacy_580";
+            prime = {
+              enable = true;
+              intelBusId = "PCI:0:2:0";
+              nvidiaBusId = "PCI:1:0:0";
+            };
+          };
+        };
+      }
+      "a Pascal hybrid laptop gets offload without the open modules or runtime D3"
+      (
+        c:
+        c.hardware.nvidia.prime.offload.enable
+        && !c.hardware.nvidia.open
+        && !c.hardware.nvidia.powerManagement.finegrained
+        && lib.hasPrefix "580." c.hardware.nvidia.package.version
+      );
+
   gpu-nvidia-legacy = evalCheck "gpu-nvidia-legacy" {
     spaceElevator = {
       enable = true;

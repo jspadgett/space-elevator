@@ -361,6 +361,7 @@ cat > "$fakebin/lspci" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   *"::0300"*) printf '00:02.0 "VGA compatible controller" "Intel Corporation" "UHD Graphics" -r04 "Dell" "Device 0c3d"\n01:00.0 "VGA compatible controller" "NVIDIA Corporation" "AD107M [GeForce RTX 4060 Mobile]" -ra1 "Dell" "Device 0c3d"\n' ;;
+  "-n -s 01:00.0") printf '01:00.0 0300: 10de:28e0 (rev a1)\n' ;;
 esac
 EOF
 chmod +x "$fakebin/lspci"
@@ -840,6 +841,123 @@ EOF
 else
   echo "SKIP: nix not available, skipping the updater"
 fi
+
+# ── Pre-Turing NVIDIA cards get a legacy driver ─────────────────────
+# The default driver branch supports Turing and newer only. The wizard
+# reads the card's PCI device ID and writes the branch that drives it.
+# FAKE_NV_ID is the device ID the fake lspci reports; FAKE_IGPU=1 adds
+# an Intel iGPU alongside it.
+nvbin=$(mktemp -d)
+cat > "$nvbin/lspci" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"::0300"*)
+    [ "${FAKE_IGPU:-0}" = 1 ] && printf '00:02.0 "VGA compatible controller" "Intel Corporation" "UHD Graphics 630" -r00 "Dell" "Device 0a2e"\n'
+    printf '01:00.0 "VGA compatible controller" "NVIDIA Corporation" "%s" -ra1 "Dell" "Device 0a2e"\n' "${FAKE_NV_NAME:-Test GPU}" ;;
+  "-n -s 01:00.0") printf '01:00.0 0300: 10de:%s (rev a1)\n' "$FAKE_NV_ID" ;;
+esac
+EOF
+chmod +x "$nvbin/lspci"
+
+# gen_nv <device id> [env...] — generate on a machine with that card
+# and echo the switches file.
+gen_nv() {
+  local id="$1" out
+  shift
+  out=$(mktemp -d)/cfg
+  env PATH="$nvbin:$PATH" FAKE_NV_ID="$id" SE_GPU=NVIDIA SE_DE="KDE Plasma" SE_FLAVORS="" \
+    SE_OUTDIR="$out" MODULE_SOURCE="$PWD/modules" "$@" bash scaffold.sh >/dev/null
+  echo "$out/hosts/citest/space-elevator.nix"
+}
+
+# sets_driver <file> <branch> — the switches file sets that branch on a
+# line of its own, not in one of the commented-out hints.
+sets_driver() { grep -qE "^[[:space:]]+(gpu\.nvidia\.)?driver = \"$2\";" "$1"; }
+
+# The branch written for a device ID, or "stable" when none is.
+branch_for() {
+  local f
+  f=$(gen_nv "$1")
+  grep -oE '^[[:space:]]+gpu\.nvidia\.driver = "[a-z0-9_]+";' "$f" | grep -oE 'legacy_[0-9]+' || echo stable
+}
+
+# The generation boundaries, plus a card from each.
+while read -r id want card; do
+  got=$(branch_for "$id")
+  check nvidia-branch "$card ($id) got $got, expected $want" [ "$got" = "$want" ]
+done <<'TABLE'
+1ba1 legacy_580 GTX-1070-Mobile
+1c8d legacy_580 GTX-1050-Mobile
+139b legacy_580 GTX-960M
+1340 legacy_580 first-Maxwell-ID
+1dff legacy_580 last-pre-Turing-ID
+1db4 legacy_580 Tesla-V100
+1e00 stable first-Turing-ID
+1f95 stable GTX-1650-Ti-Mobile
+2520 stable RTX-3060-Mobile
+28e0 stable RTX-4060-Mobile
+1180 legacy_470 GTX-680
+11a0 legacy_470 GTX-680M
+1004 legacy_470 GTX-780
+1292 legacy_470 GT-740M
+TABLE
+echo "OK: driver branch follows the device ID"
+
+# A Pascal laptop with PRIME: the branch goes inside the block, and the
+# "set this yourself" hint does not.
+f=$(FAKE_IGPU=1 FAKE_NV_NAME="GP104BM [GeForce GTX 1070 Mobile]" gen_nv 1ba1 SE_PRIME=1)
+check nvidia-pascal-prime "PRIME block lost on a Pascal laptop" has_line "$f" 'nvidiaBusId = "PCI:1:0:0";'
+check nvidia-pascal-prime "legacy branch not written inside the PRIME block" \
+  grep -qE '^      driver = "legacy_580";' "$f"
+check nvidia-pascal-prime "the manual pre-Turing hint is still there" \
+  lacks_line "$f" 'set driver = "legacy_580";'
+check nvidia-pascal-prime "the card is not named in the comment" has_line "$f" 'GeForce GTX 1070 Mobile'
+echo "OK: Pascal hybrid laptop gets legacy_580 with PRIME"
+
+# A Pascal card driving its own panel: the flat form, which upgrade.sh
+# reads back.
+f=$(gen_nv 1ba1)
+check nvidia-pascal "the driver is no longer enabled" is_enabled "$f" 'gpu\.nvidia\.enable'
+check nvidia-pascal "the hint is still there next to the real setting" \
+  lacks_line "$f" '#   gpu.nvidia.driver = "legacy_580";'
+echo "OK: Pascal without PRIME gets legacy_580"
+
+# A current card keeps the default branch and the hint.
+f=$(FAKE_IGPU=1 gen_nv 28e0 SE_PRIME=1)
+check nvidia-current "a Turing+ card got a driver line" \
+  bash -c '! grep -qE "^[[:space:]]+driver = " "$1"' _ "$f"
+check nvidia-current "the pre-Turing hint went missing" has_line "$f" 'set driver = "legacy_580";'
+
+# SE_NVIDIA_DRIVER overrides detection either way.
+f=$(gen_nv 1ba1 SE_NVIDIA_DRIVER=stable)
+check nvidia-override "SE_NVIDIA_DRIVER=stable still wrote a legacy branch" \
+  bash -c '! grep -qE "^[[:space:]]+gpu\.nvidia\.driver = " "$1"' _ "$f"
+f=$(gen_nv 28e0 SE_NVIDIA_DRIVER=legacy_580)
+check nvidia-override "SE_NVIDIA_DRIVER=legacy_580 was ignored" \
+  sets_driver "$f" legacy_580
+check nvidia-override "an unknown branch was accepted" \
+  bash -c '! env PATH="$1:$PATH" FAKE_NV_ID=1ba1 SE_GPU=NVIDIA SE_DE=GNOME SE_NVIDIA_DRIVER=legacy_390 \
+    SE_OUTDIR="$(mktemp -d)/cfg" MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null 2>&1' _ "$nvbin"
+echo "OK: SE_NVIDIA_DRIVER overrides detection"
+
+# Fermi and older: no packaged driver supports them, and the
+# proprietary module would blacklist nouveau, so no NVIDIA driver is
+# written; the iGPU's is.
+f=$(FAKE_IGPU=1 gen_nv 0dd1)
+check nvidia-fermi "a Fermi card got the NVIDIA driver" is_not_enabled "$f" 'gpu\.nvidia\.enable'
+check nvidia-fermi "the iGPU driver was not written instead" is_enabled "$f" 'gpu\.intel\.enable'
+echo "OK: Fermi falls back to the kernel's drivers"
+
+# A current-layout upgrade carries the branch across.
+pas=$(mktemp -d)/pas
+PATH="$nvbin:$PATH" FAKE_NV_ID=1ba1 SE_GPU=NVIDIA SE_DE="KDE Plasma" \
+  SE_OUTDIR="$pas" MODULE_SOURCE="$PWD/modules" bash scaffold.sh >/dev/null
+pasd=$(mktemp -d)/pasd
+PATH="$nvbin:$fakebin:$PATH" FAKE_NV_ID=1ba1 SCAFFOLD_BIN="" \
+  bash upgrade.sh --config "$pas" --output "$pasd" --yes --no-build >/dev/null
+check nvidia-upgrade "the upgrade dropped the legacy branch" \
+  sets_driver "$pasd/hosts/citest/space-elevator.nix" legacy_580
+echo "OK: upgrade keeps the legacy branch"
 
 # ── The generated file is valid Nix ─────────────────────────────────
 # (Evaluating the whole config needs nixpkgs; parsing does not.)
