@@ -492,8 +492,9 @@ if [ "$IS_HANDHELD" = false ]; then
   fi
 fi
 
-# On an installed NixOS system we can capture the real hardware config
-if [ "$INSTALL_MODE" = false ] && [ "$NONINT" != 1 ] \
+# On an installed NixOS system we can capture the real hardware config.
+# The live ISO's mounts (tmpfs root, squashfs store) are never a target.
+if [ "$INSTALL_MODE" = false ] && [ "$NONINT" != 1 ] && [ "$IS_ISO" = false ] \
     && command -v nixos-generate-config >/dev/null 2>&1; then
   if gum confirm "Capture THIS machine's hardware config (disks, filesystems)? Choose No if this config is for a different machine."; then
     CAPTURE_HW=true
@@ -1259,6 +1260,10 @@ EOF
 
 if [ "$INSTALL_MODE" = true ]; then
   INSTALL_HINT="  sudo nixos-install --flake .#$HOSTNAME   (then set root password and reboot)"
+elif [ "$IS_ISO" = true ]; then
+  INSTALL_HINT="  Run 'space-elevator' again and choose 'Erase a disk and install',
+  or mount your own partitions at /mnt (ESP at /mnt/boot) and re-run it.
+  Don't run nixos-rebuild here: the live session builds into RAM."
 elif [ "$HW_CAPTURED" = true ]; then
   INSTALL_HINT="  sudo nixos-rebuild switch --flake .#$HOSTNAME   (hardware config already captured)"
 else
@@ -1267,17 +1272,25 @@ else
 fi
 
 COUNT=$(find "$MODULE_SOURCE" -name '*.nix' ! -name default.nix | wc -l)
+# The VM build runs in the live session's RAM-backed store on the ISO,
+# so the test-drive hint is shown only on installed systems.
+VM_HINT=()
+if [ "$IS_ISO" = false ]; then
+  VM_HINT=(
+    "Test drive it in a VM right now:"
+    "  cd $OUTDIR && git init && git add -A"
+    "  nixos-rebuild build-vm --flake .#$HOSTNAME"
+    "  ./result/bin/run-$HOSTNAME-vm    (login: $USERNAME / $PW_HINT)"
+    ""
+  )
+fi
 gum style \
   --border rounded --border-foreground 2 \
   --padding "1 2" --margin "1 0" \
   "Liftoff! Generated $OUTDIR with $COUNT features available." \
   "Switch any of them on in hosts/$HOSTNAME/space-elevator.nix." \
   "" \
-  "Test drive it in a VM right now:" \
-  "  cd $OUTDIR && git init && git add -A" \
-  "  nixos-rebuild build-vm --flake .#$HOSTNAME" \
-  "  ./result/bin/run-$HOSTNAME-vm    (login: $USERNAME / $PW_HINT)" \
-  "" \
+  "${VM_HINT[@]}" \
   "Install on real hardware:" \
   "$INSTALL_HINT"
 
